@@ -1,0 +1,130 @@
+{
+  "entities": {
+    "CommunityUpdate": {
+      "title": "Community Update",
+      "description": "News and updates shared with the community.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "date": { "type": "string" },
+        "type": { "type": "string", "enum": ["update", "news", "novelty"] },
+        "imageUrl": { "type": "string" },
+        "isImportant": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "date", "type"]
+    },
+    "SocialProof": {
+      "title": "Social Proof",
+      "description": "Testimonials and results from members.",
+      "type": "object",
+      "properties": {
+        "memberName": { "type": "string" },
+        "avatar": { "type": "string" },
+        "result": { "type": "string" },
+        "testimonial": { "type": "string" },
+        "iaName": { "type": "string" },
+        "date": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["memberName", "result", "testimonial", "iaName", "date", "imageUrl"]
+    },
+    "AIResult": {
+      "title": "AI Performance Result",
+      "description": "Performance metrics for different AI strategies.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "logo": { "type": "string" },
+        "currentMonthReturn": { "type": "number" },
+        "yearCumulativeReturn": { "type": "number" },
+        "maxDrawdown": { "type": "number" },
+        "totalTradesMonth": { "type": "number" },
+        "winRate": { "type": "number" },
+        "equityData": { "type": "array", "items": { "type": "number" } },
+        "status": { "type": "string", "enum": ["Active", "Maintenance", "Beta"] },
+        "trackingUrl": { "type": "string" },
+        "lastSync": { "type": "string" },
+        "isLive": { "type": "boolean" }
+      },
+      "required": ["name", "logo", "currentMonthReturn", "yearCumulativeReturn", "status"]
+    },
+    "BrokerBanner": {
+      "title": "Broker Banner",
+      "description": "Advertisement banner for brokers and bonuses.",
+      "type": "object",
+      "properties": {
+        "brokerName": { "type": "string" },
+        "offer": { "type": "string" },
+        "badge": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "ctaUrl": { "type": "string" },
+        "order": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["brokerName", "offer", "imageUrl", "ctaUrl"]
+    },
+    "SystemConfig": {
+      "title": "System Configuration",
+      "description": "Global application settings and dynamic text.",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["key", "value"]
+    },
+    "AIInsightsCache": {
+      "title": "AI Insights Cache",
+      "description": "Cached AI-generated analysis for news items.",
+      "type": "object",
+      "properties": {
+        "fullContent": { "type": "string" },
+        "summary": { "type": "string" },
+        "keyPoints": { "type": "array", "items": { "type": "string" } },
+        "recommendation": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "FCMToken": {
+      "title": "FCM Registration Token",
+      "description": "Stored device tokens for FCM push notifications.",
+      "type": "object",
+      "properties": {
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/updates/{updateId}": {
+      "schema": "CommunityUpdate",
+      "description": "Collection of community news and updates."
+    },
+    "/social_proof/{proofId}": {
+      "schema": "SocialProof",
+      "description": "Collection of member testimonials and results."
+    },
+    "/ai_results/{resultId}": {
+      "schema": "AIResult",
+      "description": "Collection of AI performance data."
+    },
+    "/banners/{bannerId}": {
+      "schema": "BrokerBanner",
+      "description": "Collection of promotional banners."
+    },
+    "/config/{configId}": {
+      "schema": "SystemConfig",
+      "description": "Collection of global app configuration items."
+    },
+    "/news_ai_cache/{cacheId}": {
+      "schema": "AIInsightsCache",
+      "description": "Cache for AI analysis of news."
+    },
+    "/fcm_tokens/{tokenId}": {
+      "schema": "FCMToken",
+      "description": "Registry of active device tokens for push notifications."
+    }
+  }
+}

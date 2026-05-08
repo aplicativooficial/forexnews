@@ -1,0 +1,29 @@
+{
+  "name": "Forex News",
+  "short_name": "Forex News",
+  "description": "Portal Exclusivo de Análise e Performance Trading",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0D0D0D",
+  "theme_color": "#D4AF37",
+  "gcm_sender_id": "857051692096",
+  "icons": [
+    {
+      "src": "https://i.postimg.cc/y6b0wwzp/logonova01branco.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "https://i.postimg.cc/y6b0wwzp/logonova01branco.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "maskable"
+    },
+    {
+      "src": "https://i.postimg.cc/y6b0wwzp/logonova01branco.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}

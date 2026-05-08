@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-brand-gold: #D4AF37;
+  --color-brand-green: #00C896;
+  --color-brand-red: #FF4C4C;
+  --color-bg-dark: #0D0D0D;
+  --color-bg-sidebar: #141414;
+  --color-bg-card: #141414;
+  --color-bg-header: #1A1A1A;
+  --color-border-dim: #222222;
+  --color-border-sidebar: #2A2A2A;
+  --color-text-dim: #A0A0A0;
+  
+  @keyframes bounce-slow {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-bg-dark text-[#E5E5E5] font-sans antialiased;
+  }
+}
+
+/* Gradients */
+.immersive-gradient {
+  background: radial-gradient(circle at 50% -20%, #1e1e1e 0%, #0d0d0d 60%);
+}
+
+.banner-gradient {
+  background: linear-gradient(90deg, #141414, rgba(212, 175, 55, 0.13), #141414);
+}
+
+.golden-gradient {
+  background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%);
+}
+
+.animate-bounce-slow {
+  animation: bounce-slow 3s ease-in-out infinite;
+}
+
+/* Navigation */
+.nav-item-active {
+  background: #1E1E1E !important;
+  color: #D4AF37 !important;
+  border-left: 4px solid #D4AF37;
+}
+
+/* Card Styles */
+.immersive-card {
+  @apply bg-bg-card border border-border-dim rounded-xl overflow-hidden flex flex-col;
+}
+
+.immersive-card-header {
+  @apply px-4 py-3 bg-bg-header border-b border-border-dim flex justify-between items-center;
+}
+
+.immersive-card-title {
+  @apply text-[13px] font-semibold uppercase tracking-[1px] text-brand-gold;
+}
+
+.safe-area-padding {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+@supports (padding: env(safe-area-inset-top)) {
+  .safe-area-padding {
+    padding-top: max(0px, env(safe-area-inset-top));
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
+  }
+}
+
