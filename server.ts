@@ -59,39 +59,30 @@ db.exec(`
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
-  // Banners
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS banners (
-      id TEXT PRIMARY KEY,
-      brokerName TEXT,
-      offer TEXT,
-      badge TEXT,
-      imageUrl TEXT,
-      ctaUrl TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  CREATE TABLE IF NOT EXISTS banners (
+    id TEXT PRIMARY KEY,
+    brokerName TEXT,
+    offer TEXT,
+    badge TEXT,
+    imageUrl TEXT,
+    ctaUrl TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-  // Config (Generic settings like footer_banner)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS config (
-      id TEXT PRIMARY KEY,
-      value TEXT,
-      updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  CREATE TABLE IF NOT EXISTS config (
+    id TEXT PRIMARY KEY,
+    value TEXT,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-  // News AI Cache
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS news_ai_cache (
-      id TEXT PRIMARY KEY,
-      fullContent TEXT,
-      summary TEXT,
-      keyPoints TEXT,
-      recommendation TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  CREATE TABLE IF NOT EXISTS news_ai_cache (
+    id TEXT PRIMARY KEY,
+    fullContent TEXT,
+    summary TEXT,
+    keyPoints TEXT,
+    recommendation TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 async function startServer() {

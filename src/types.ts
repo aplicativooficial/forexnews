@@ -64,6 +64,7 @@ export interface AIResult {
 }
 
 export interface DailyAnalysis {
+  id?: string;
   date: string;
   text: string;
 }
