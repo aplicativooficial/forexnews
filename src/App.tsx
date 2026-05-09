@@ -58,7 +58,7 @@ import { InstallGuideSection } from './components/InstallGuideSection';
 const ADMIN_PASSWORD = "Fabinho123*";
 
 export default function App() {
-  const { user, isAdmin: contextIsAdmin, logout, loading } = useAuth();
+  const { user, isAdmin: contextIsAdmin, logout, loading, setLocalAdmin } = useAuth();
   const [activeSection, setActiveSection] = useState('news');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showAdminModal, setShowAdminModal] = useState(false);
@@ -253,13 +253,9 @@ export default function App() {
   const handleAdminAuth = async (e: FormEvent) => {
     e.preventDefault();
     if (adminPass === ADMIN_PASSWORD) {
-      try {
-        await signInWithGoogle();
-        setShowAdminModal(false);
-        setAdminPass('');
-      } catch (error) {
-        alert("Erro ao autenticar com Google. Tente novamente.");
-      }
+      setLocalAdmin(true);
+      setShowAdminModal(false);
+      setAdminPass('');
     } else {
       alert("Senha incorreta");
     }
