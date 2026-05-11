@@ -304,14 +304,13 @@ app.post('/api/send-notification', async (req, res) => {
     const registrationTokens = tokens.map(t => t.token);
     
     const message = {
-      notification: {
+      data: {
         title: title,
         body: body,
-      },
-      data: {
         url: url || '/community',
         subtitle: subtitle || 'Forex News',
         notificationId: notificationId || Date.now().toString(),
+        tag: notificationId || 'community-update'
       },
       tokens: registrationTokens,
     };
@@ -361,14 +360,13 @@ app.post('/api/test-notification', async (req, res) => {
 
     const registrationTokens = tokens.map(t => t.token);
     const message = {
-      notification: {
+      data: {
         title: "🔔 Teste de Notificação",
         body: "Esta é uma mensagem de teste do seu terminal de trading.",
-      },
-      data: {
         url: '/community',
         subtitle: 'Teste de Sistema',
-        notificationId: 'test-' + Date.now()
+        notificationId: 'test-' + Date.now(),
+        tag: 'test-notification'
       },
       tokens: registrationTokens,
     };
