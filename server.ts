@@ -4,120 +4,138 @@ import path from "path";
 import Database from "better-sqlite3";
 import cors from "cors";
 import helmet from "helmet";
-import admin from "firebase-admin";
+import { initializeApp, cert } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
+import { getMessaging } from "firebase-admin/messaging";
 import fs from "fs";
 
-const db = new Database('database.sqlite');
+// Load Firebase Config
+const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 
 // Initialize Firebase Admin
+let db: ReturnType<typeof getFirestore>;
+let messaging: ReturnType<typeof getMessaging>;
+
 try {
   const serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
   if (fs.existsSync(serviceAccountPath)) {
     const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+    const app = initializeApp({
+      credential: cert(serviceAccount)
     });
-    console.log("Firebase Admin initialized successfully");
+    // Use the specific database ID if provided in config
+    db = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+    messaging = getMessaging(app);
+    console.log("Firebase Admin and Firestore initialized successfully");
   } else {
-    console.warn("Firebase service account file not found. Push notifications will be disabled.");
+    console.warn("Firebase service account file not found. Trying default credentials...");
+    const app = initializeApp();
+    db = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+    messaging = getMessaging(app);
   }
 } catch (error) {
   console.error("Error initializing Firebase Admin:", error);
 }
 
-// Initialize database tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS ai_results (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    source TEXT,
-    logo TEXT,
-    currentMonthReturn REAL,
-    yearCumulativeReturn REAL,
-    maxDrawdown REAL,
-    totalTradesMonth REAL,
-    winRate REAL,
-    equityData TEXT,
-    status TEXT,
-    trackingUrl TEXT,
-    lastSync TEXT,
-    isLive INTEGER
-  );
+// Function to handle one-time migration from SQLite to Firestore
+async function migrateIfNeeded() {
+  const sqlitePath = path.join(process.cwd(), 'database.sqlite');
+  if (!fs.existsSync(sqlitePath)) return;
+  if (!db) return;
 
-  CREATE TABLE IF NOT EXISTS community_updates (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    subtitle TEXT,
-    content TEXT,
-    date TEXT,
-    type TEXT,
-    imageUrl TEXT,
-    isImportant INTEGER,
-    externalLink TEXT,
-    externalLinkText TEXT,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+  console.log("Found existing SQLite database. Starting migration to Firestore...");
+  const sqliteDb = new Database(sqlitePath);
+  
+  try {
+    // Migration: AI Results
+    const aiResults = sqliteDb.prepare("SELECT * FROM ai_results").all();
+    for (const r of aiResults as any[]) {
+      await db.collection('ai_results').doc(r.id).set({
+        ...r,
+        equityData: JSON.parse(r.equityData || '[]'),
+        isLive: Boolean(r.isLive)
+      });
+    }
 
-  CREATE TABLE IF NOT EXISTS daily_analysis (
-    id TEXT PRIMARY KEY,
-    date TEXT,
-    text TEXT
-  );
+    // Migration: Community Updates
+    const community = sqliteDb.prepare("SELECT * FROM community_updates").all();
+    for (const u of community as any[]) {
+      await db.collection('updates').doc(u.id).set({
+        ...u,
+        isImportant: Boolean(u.isImportant)
+      });
+    }
 
-  CREATE TABLE IF NOT EXISTS social_proofs (
-    id TEXT PRIMARY KEY,
-    memberName TEXT,
-    avatar TEXT,
-    result TEXT,
-    testimonial TEXT,
-    iaName TEXT,
-    iaId TEXT,
-    date TEXT,
-    imageUrl TEXT,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    // Migration: Daily Analysis
+    const analysisArr = sqliteDb.prepare("SELECT * FROM daily_analysis WHERE id = 'current'").all() as any[];
+    if (analysisArr.length > 0) {
+      await db.collection('analysis').doc('current').set({
+        text: analysisArr[0].text,
+        date: analysisArr[0].date
+      });
+    }
 
-  CREATE TABLE IF NOT EXISTS banners (
-    id TEXT PRIMARY KEY,
-    brokerName TEXT,
-    offer TEXT,
-    badge TEXT,
-    imageUrl TEXT,
-    ctaUrl TEXT,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    // Migration: Social Proofs
+    const proofs = sqliteDb.prepare("SELECT * FROM social_proofs").all();
+    for (const p of proofs as any[]) {
+      await db.collection('social_proof').doc(p.id).set(p);
+    }
 
-  CREATE TABLE IF NOT EXISTS config (
-    id TEXT PRIMARY KEY,
-    value TEXT,
-    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    // Migration: Banners
+    const banners = sqliteDb.prepare("SELECT * FROM banners").all();
+    for (const b of banners as any[]) {
+      await db.collection('banners').doc(b.id).set(b);
+    }
 
-  CREATE TABLE IF NOT EXISTS news_ai_cache (
-    id TEXT PRIMARY KEY,
-    fullContent TEXT,
-    summary TEXT,
-    keyPoints TEXT,
-    recommendation TEXT,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    // Migration: Config
+    const configs = sqliteDb.prepare("SELECT * FROM config").all();
+    for (const c of configs as any[]) {
+      await db.collection('config').doc(c.id).set(JSON.parse(c.value));
+    }
 
-  CREATE TABLE IF NOT EXISTS fcm_tokens (
-    token TEXT PRIMARY KEY,
-    userId TEXT,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+    // Migration: News Cache
+    const cache = sqliteDb.prepare("SELECT * FROM news_ai_cache").all();
+    for (const n of cache as any[]) {
+      await db.collection('news_ai_cache').doc(n.id).set({
+        ...n,
+        keyPoints: JSON.parse(n.keyPoints || '[]')
+      });
+    }
+
+    // Migration: FCM Tokens
+    const tokens = sqliteDb.prepare("SELECT * FROM fcm_tokens").all();
+    for (const t of tokens as any[]) {
+      await db.collection('fcm_tokens').doc(t.token).set(t);
+    }
+
+    console.log("Migration completed successfully!");
+    sqliteDb.close();
+    fs.renameSync(sqlitePath, sqlitePath + '.migrated');
+  } catch (err) {
+    console.error("Migration failed:", err);
+  }
+}
 
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
+
+  // Run migration if snapshot exists
+  await migrateIfNeeded();
 
   app.use(helmet({
     contentSecurityPolicy: false, // For development and iFrame compatibility
   }));
   app.use(cors());
   app.use(express.json());
+
+  // Middleware to ensure database is ready
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api') && !db && req.path !== '/api/health') {
+      return res.status(503).json({ error: "Database initialization failed. Check server logs." });
+    }
+    next();
+  });
 
   // Log all API requests
   app.use("/api", (req, res, next) => {
@@ -128,163 +146,201 @@ async function startServer() {
   // API Routes
   
   // AI Results
-  app.get("/api/ai-results", (req, res) => {
-    const results = db.prepare("SELECT * FROM ai_results").all();
-    res.json(results.map((r: any) => ({
-      ...r,
-      equityData: JSON.parse(r.equityData || '[]'),
-      isLive: Boolean(r.isLive)
-    })));
+  app.get("/api/ai-results", async (req, res) => {
+    try {
+      const snapshot = await db.collection('ai_results').get();
+      const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      res.json(results);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.post("/api/ai-results", (req, res) => {
-    const ai = req.body;
-    db.prepare(`
-      INSERT OR REPLACE INTO ai_results 
-      (id, name, source, logo, currentMonthReturn, yearCumulativeReturn, maxDrawdown, totalTradesMonth, winRate, equityData, status, trackingUrl, lastSync, isLive)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      ai.id, ai.name, ai.source, ai.logo, ai.currentMonthReturn, ai.yearCumulativeReturn, 
-      ai.maxDrawdown, ai.totalTradesMonth, ai.winRate, JSON.stringify(ai.equityData || []), 
-      ai.status, ai.trackingUrl, ai.lastSync, ai.isLive ? 1 : 0
-    );
-    res.json({ success: true });
+  app.post("/api/ai-results", async (req, res) => {
+    try {
+      const ai = req.body;
+      await db.collection('ai_results').doc(ai.id).set(ai);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.delete("/api/ai-results/:id", (req, res) => {
-    db.prepare("DELETE FROM ai_results WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
+  app.delete("/api/ai-results/:id", async (req, res) => {
+    try {
+      await db.collection('ai_results').doc(req.params.id).delete();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   // Community Updates
-  app.get("/api/community", (req, res) => {
-    const updates = db.prepare("SELECT * FROM community_updates ORDER BY createdAt DESC").all();
-    res.json(updates.map((u: any) => ({
-      ...u,
-      isImportant: Boolean(u.isImportant)
-    })));
+  app.get("/api/community", async (req, res) => {
+    try {
+      const snapshot = await db.collection('updates').orderBy('createdAt', 'desc').get();
+      const updates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      res.json(updates);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.post("/api/community", (req, res) => {
-    const update = req.body;
-    db.prepare(`
-      INSERT OR REPLACE INTO community_updates 
-      (id, title, subtitle, content, date, type, imageUrl, isImportant, externalLink, externalLinkText)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      update.id, update.title, update.subtitle, update.content, update.date, 
-      update.type, update.imageUrl, update.isImportant ? 1 : 0, 
-      update.externalLink, update.externalLinkText
-    );
-    res.json({ success: true });
+  app.post("/api/community", async (req, res) => {
+    try {
+      const update = req.body;
+      if (!update.createdAt) update.createdAt = new Date().toISOString();
+      await db.collection('updates').doc(update.id).set(update);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.delete("/api/community/:id", (req, res) => {
-    db.prepare("DELETE FROM community_updates WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
+  app.delete("/api/community/:id", async (req, res) => {
+    try {
+      await db.collection('updates').doc(req.params.id).delete();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   // Daily Analysis
-  app.get("/api/analysis", (req, res) => {
-    const analysis = db.prepare("SELECT * FROM daily_analysis WHERE id = 'current'").get();
-    res.json(analysis || null);
+  app.get("/api/analysis", async (req, res) => {
+    try {
+      const doc = await db.collection('analysis').doc('current').get();
+      res.json(doc.exists ? doc.data() : null);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.post("/api/analysis", (req, res) => {
-    const { text, date } = req.body;
-    db.prepare("INSERT OR REPLACE INTO daily_analysis (id, date, text) VALUES ('current', ?, ?)")
-      .run(date, text);
-    res.json({ success: true });
+  app.post("/api/analysis", async (req, res) => {
+    try {
+      const { text, date } = req.body;
+      await db.collection('analysis').doc('current').set({ text, date });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   // Social Proofs
-  app.get("/api/social-proofs", (req, res) => {
-    const proofs = db.prepare("SELECT * FROM social_proofs ORDER BY createdAt DESC").all();
-    res.json(proofs);
+  app.get("/api/social-proofs", async (req, res) => {
+    try {
+      const snapshot = await db.collection('social_proof').orderBy('createdAt', 'desc').get();
+      const proofs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      res.json(proofs);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.post("/api/social-proofs", (req, res) => {
-    const proof = req.body;
-    db.prepare(`
-      INSERT OR REPLACE INTO social_proofs 
-      (id, memberName, avatar, result, testimonial, iaName, iaId, date, imageUrl)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      proof.id, proof.memberName, proof.avatar, proof.result, proof.testimonial, 
-      proof.iaName, proof.iaId, proof.date, proof.imageUrl
-    );
-    res.json({ success: true });
+  app.post("/api/social-proofs", async (req, res) => {
+    try {
+      const proof = req.body;
+      if (!proof.createdAt) proof.createdAt = new Date().toISOString();
+      await db.collection('social_proof').doc(proof.id).set(proof);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
-  app.delete("/api/social-proofs/:id", (req, res) => {
-    db.prepare("DELETE FROM social_proofs WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
+  app.delete("/api/social-proofs/:id", async (req, res) => {
+    try {
+      await db.collection('social_proof').doc(req.params.id).delete();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   // Vite middleware for development
   // Banners
-app.get('/api/banners', (req, res) => {
-  const banners = db.prepare('SELECT * FROM banners ORDER BY createdAt DESC').all();
-  res.json(banners);
-});
+  app.get('/api/banners', async (req, res) => {
+    try {
+      const snapshot = await db.collection('banners').orderBy('createdAt', 'desc').get();
+      const banners = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      res.json(banners);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
-app.post('/api/banners', (req, res) => {
-  const { id, brokerName, offer, badge, imageUrl, ctaUrl } = req.body;
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO banners (id, brokerName, offer, badge, imageUrl, ctaUrl)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  stmt.run(id, brokerName, offer, badge, imageUrl, ctaUrl);
-  res.json({ success: true });
-});
+  app.post('/api/banners', async (req, res) => {
+    try {
+      const banner = req.body;
+      if (!banner.createdAt) banner.createdAt = new Date().toISOString();
+      await db.collection('banners').doc(banner.id).set(banner);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
-app.delete('/api/banners/:id', (req, res) => {
-  db.prepare('DELETE FROM banners WHERE id = ?').run(req.params.id);
-  res.json({ success: true });
-});
+  app.delete('/api/banners/:id', async (req, res) => {
+    try {
+      await db.collection('banners').doc(req.params.id).delete();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
 // Config
-app.get('/api/config/:id', (req, res) => {
-  const config = db.prepare('SELECT value FROM config WHERE id = ?').get(req.params.id) as any;
-  res.json(config ? JSON.parse(config.value) : null);
+app.get('/api/config/:id', async (req, res) => {
+  try {
+    const doc = await db.collection('config').doc(req.params.id).get();
+    res.json(doc.exists ? doc.data() : null);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
-app.post('/api/config/:id', (req, res) => {
-  const stmt = db.prepare('INSERT OR REPLACE INTO config (id, value) VALUES (?, ?)');
-  stmt.run(req.params.id, JSON.stringify(req.body));
-  res.json({ success: true });
+app.post('/api/config/:id', async (req, res) => {
+  try {
+    await db.collection('config').doc(req.params.id).set(req.body);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // News AI Cache
-app.get('/api/news-cache', (req, res) => {
-  const id = req.query.id as string;
-  if (!id) return res.status(400).json({ error: "Missing id" });
-  
-  const cache = db.prepare('SELECT * FROM news_ai_cache WHERE id = ?').get(id);
-  if (cache) {
-    (cache as any).keyPoints = JSON.parse((cache as any).keyPoints);
+app.get('/api/news-cache', async (req, res) => {
+  try {
+    const id = req.query.id as string;
+    if (!id) return res.status(400).json({ error: "Missing id" });
+    const doc = await db.collection('news_ai_cache').doc(id).get();
+    res.json(doc.exists ? doc.data() : null);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
   }
-  res.json(cache || null);
 });
 
-app.post('/api/news-cache', (req, res) => {
-  const { id, fullContent, summary, keyPoints, recommendation } = req.body;
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO news_ai_cache (id, fullContent, summary, keyPoints, recommendation)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  stmt.run(id, fullContent, summary, JSON.stringify(keyPoints), recommendation);
-  res.json({ success: true });
+app.post('/api/news-cache', async (req, res) => {
+  try {
+    const cache = req.body;
+    if (!cache.createdAt) cache.createdAt = new Date().toISOString();
+    await db.collection('news_ai_cache').doc(cache.id).set(cache);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // FCM Notification Routes
-app.post('/api/fcm-token', (req, res) => {
+app.post('/api/fcm-token', async (req, res) => {
   const { token, userId } = req.body;
   if (!token) return res.status(400).json({ error: "Token is required" });
-
   try {
-    const stmt = db.prepare('INSERT OR REPLACE INTO fcm_tokens (token, userId) VALUES (?, ?)');
-    stmt.run(token, userId || null);
+    await db.collection('fcm_tokens').doc(token).set({
+      token,
+      userId: userId || null,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
     res.json({ success: true });
   } catch (error) {
     console.error("Error saving FCM token:", error);
@@ -294,19 +350,17 @@ app.post('/api/fcm-token', (req, res) => {
 
 app.post('/api/send-notification', async (req, res) => {
   const { title, body, url, subtitle, notificationId } = req.body;
-  
   try {
-    const tokens = db.prepare('SELECT token FROM fcm_tokens').all() as { token: string }[];
-    if (tokens.length === 0) {
+    const snapshot = await db.collection('fcm_tokens').get();
+    if (snapshot.empty) {
       return res.json({ success: true, tokensTried: 0, successCount: 0, failureCount: 0 });
     }
 
-    const registrationTokens = tokens.map(t => t.token);
-    
+    const registrationTokens = snapshot.docs.map(doc => doc.id);
     const message = {
       data: {
-        title: title,
-        body: body,
+        title: title || '',
+        body: body || '',
         url: url || '/community',
         subtitle: subtitle || 'Forex News',
         notificationId: notificationId || Date.now().toString(),
@@ -315,28 +369,21 @@ app.post('/api/send-notification', async (req, res) => {
       tokens: registrationTokens,
     };
 
-    const response = await admin.messaging().sendEachForMulticast(message);
+    const response = await messaging.sendEachForMulticast(message);
     
     // Clean up failed tokens
     if (response.failureCount > 0) {
-      const tokensToDelete: string[] = [];
+      const batch = db.batch();
       response.responses.forEach((resp, idx) => {
         if (!resp.success) {
           const errorCode = resp.error?.code;
           if (errorCode === 'messaging/registration-token-not-registered' || 
               errorCode === 'messaging/invalid-registration-token') {
-            tokensToDelete.push(registrationTokens[idx]);
+            batch.delete(db.collection('fcm_tokens').doc(registrationTokens[idx]));
           }
         }
       });
-
-      if (tokensToDelete.length > 0) {
-        const deleteStmt = db.prepare('DELETE FROM fcm_tokens WHERE token = ?');
-        const deleteMany = db.transaction((tokens: string[]) => {
-          for (const token of tokens) deleteStmt.run(token);
-        });
-        deleteMany(tokensToDelete);
-      }
+      await batch.commit();
     }
 
     res.json({
@@ -353,12 +400,12 @@ app.post('/api/send-notification', async (req, res) => {
 
 app.post('/api/test-notification', async (req, res) => {
   try {
-    const tokens = db.prepare('SELECT token FROM fcm_tokens').all() as { token: string }[];
-    if (tokens.length === 0) {
+    const snapshot = await db.collection('fcm_tokens').get();
+    if (snapshot.empty) {
       return res.status(404).json({ error: "No subscribers found" });
     }
 
-    const registrationTokens = tokens.map(t => t.token);
+    const registrationTokens = snapshot.docs.map(doc => doc.id);
     const message = {
       data: {
         title: "🔔 Teste de Notificação",
@@ -371,7 +418,7 @@ app.post('/api/test-notification', async (req, res) => {
       tokens: registrationTokens,
     };
 
-    const response = await admin.messaging().sendEachForMulticast(message);
+    const response = await messaging.sendEachForMulticast(message);
     res.json({ 
       success: true, 
       count: response.successCount, 
@@ -383,10 +430,10 @@ app.post('/api/test-notification', async (req, res) => {
   }
 });
 
-app.get('/api/notification-status', (req, res) => {
+app.get('/api/notification-status', async (req, res) => {
   try {
-    const row = db.prepare('SELECT COUNT(*) as count FROM fcm_tokens').get() as any;
-    res.json({ tokenCount: row.count || 0 });
+    const snapshot = await db.collection('fcm_tokens').count().get();
+    res.json({ tokenCount: snapshot.data().count });
   } catch (error) {
     res.json({ tokenCount: 0 });
   }
