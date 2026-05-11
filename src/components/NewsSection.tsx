@@ -151,8 +151,8 @@ export function NewsSection() {
       if (toTranslate.length === 0) {
         return items.map(item => ({
           ...item,
-          title: cache[item.id].title,
-          description: cache[item.id].description
+          title: cache[item.id]?.title || item.title,
+          description: cache[item.id]?.description || item.description
         }));
       }
 
@@ -217,8 +217,18 @@ export function NewsSection() {
     setLoading(true);
     try {
       const response = await fetch('https://api.rss2json.com/v1/api.json?rss_url=https://www.fxstreet.com/rss/news');
-      const data = await response.json();
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error("RSS API returned invalid JSON: " + text.substring(0, 100));
+      }
       
+      if (!data || !data.items) {
+        throw new Error("Invalid response format from RSS API");
+      }
+
       const mappedNews: NewsItem[] = data.items.map((item: any, index: number) => ({
         id: item.guid || index.toString(),
         title: item.title,

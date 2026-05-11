@@ -3,7 +3,7 @@ import { Bell, Plus, Trash2, Calendar, X, RefreshCw, ExternalLink } from 'lucide
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { CommunityUpdate } from '@/src/types';
-import { api } from '@/src/lib/api';
+import { api, handleResponse } from '@/src/lib/api';
 
 import { useAuth } from '../lib/AuthContext';
 
@@ -88,10 +88,10 @@ export function CommunitySection({ isAdmin }: { isAdmin: boolean }) {
         });
 
         if (response.ok) {
-          const result = await response.json();
-          if (result.tokensTried === 0) {
+          const result = await handleResponse(response);
+          if (result && result.tokensTried === 0) {
             console.warn("Nenhum dispositivo registrado para notificações.");
-          } else {
+          } else if (result) {
             console.log(`Notificações: ${result.successCount} sucesso, ${result.failureCount} falha.`);
           }
         }
@@ -225,8 +225,10 @@ export function CommunitySection({ isAdmin }: { isAdmin: boolean }) {
                     if (!window.confirm("Deseja enviar uma notificação de TESTE para todos os usuários?")) return;
                     try {
                       const res = await fetch('/api/test-notification', { method: 'POST' });
-                      const data = await res.json();
-                      alert(`Enviado! Sucessos: ${data.count || 0} | Falhas: ${data.failures || 0}`);
+                      const data = await handleResponse(res);
+                      if (data) {
+                        alert(`Enviado! Sucessos: ${data.count || 0} | Falhas: ${data.failures || 0}`);
+                      }
                     } catch (err) {
                       alert("Erro ao enviar teste: " + err);
                     }

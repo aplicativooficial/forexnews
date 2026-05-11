@@ -4,8 +4,26 @@ import path from "path";
 import Database from "better-sqlite3";
 import cors from "cors";
 import helmet from "helmet";
+import admin from "firebase-admin";
+import fs from "fs";
 
 const db = new Database('database.sqlite');
+
+// Initialize Firebase Admin
+try {
+  const serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
+  if (fs.existsSync(serviceAccountPath)) {
+    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log("Firebase Admin initialized successfully");
+  } else {
+    console.warn("Firebase service account file not found. Push notifications will be disabled.");
+  }
+} catch (error) {
+  console.error("Error initializing Firebase Admin:", error);
+}
 
 // Initialize database tables
 db.exec(`
@@ -83,17 +101,29 @@ db.exec(`
     recommendation TEXT,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS fcm_tokens (
+    token TEXT PRIMARY KEY,
+    userId TEXT,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(helmet({
     contentSecurityPolicy: false, // For development and iFrame compatibility
   }));
   app.use(cors());
   app.use(express.json());
+
+  // Log all API requests
+  app.use("/api", (req, res, next) => {
+    console.log(`${req.method} ${req.url}`);
+    next();
+  });
 
   // API Routes
   
@@ -226,12 +256,15 @@ app.post('/api/config/:id', (req, res) => {
 });
 
 // News AI Cache
-app.get('/api/news-cache/:id', (req, res) => {
-  const cache = db.prepare('SELECT * FROM news_ai_cache WHERE id = ?').get(req.params.id);
+app.get('/api/news-cache', (req, res) => {
+  const id = req.query.id as string;
+  if (!id) return res.status(400).json({ error: "Missing id" });
+  
+  const cache = db.prepare('SELECT * FROM news_ai_cache WHERE id = ?').get(id);
   if (cache) {
     (cache as any).keyPoints = JSON.parse((cache as any).keyPoints);
   }
-  res.json(cache);
+  res.json(cache || null);
 });
 
 app.post('/api/news-cache', (req, res) => {
@@ -242,6 +275,123 @@ app.post('/api/news-cache', (req, res) => {
   `);
   stmt.run(id, fullContent, summary, JSON.stringify(keyPoints), recommendation);
   res.json({ success: true });
+});
+
+// FCM Notification Routes
+app.post('/api/fcm-token', (req, res) => {
+  const { token, userId } = req.body;
+  if (!token) return res.status(400).json({ error: "Token is required" });
+
+  try {
+    const stmt = db.prepare('INSERT OR REPLACE INTO fcm_tokens (token, userId) VALUES (?, ?)');
+    stmt.run(token, userId || null);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error saving FCM token:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post('/api/send-notification', async (req, res) => {
+  const { title, body, url, subtitle, notificationId } = req.body;
+  
+  try {
+    const tokens = db.prepare('SELECT token FROM fcm_tokens').all() as { token: string }[];
+    if (tokens.length === 0) {
+      return res.json({ success: true, tokensTried: 0, successCount: 0, failureCount: 0 });
+    }
+
+    const registrationTokens = tokens.map(t => t.token);
+    
+    const message = {
+      notification: {
+        title: title,
+        body: body,
+      },
+      data: {
+        url: url || '/community',
+        subtitle: subtitle || 'Forex News',
+        notificationId: notificationId || Date.now().toString(),
+      },
+      tokens: registrationTokens,
+    };
+
+    const response = await admin.messaging().sendEachForMulticast(message);
+    
+    // Clean up failed tokens
+    if (response.failureCount > 0) {
+      const tokensToDelete: string[] = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          const errorCode = resp.error?.code;
+          if (errorCode === 'messaging/registration-token-not-registered' || 
+              errorCode === 'messaging/invalid-registration-token') {
+            tokensToDelete.push(registrationTokens[idx]);
+          }
+        }
+      });
+
+      if (tokensToDelete.length > 0) {
+        const deleteStmt = db.prepare('DELETE FROM fcm_tokens WHERE token = ?');
+        const deleteMany = db.transaction((tokens: string[]) => {
+          for (const token of tokens) deleteStmt.run(token);
+        });
+        deleteMany(tokensToDelete);
+      }
+    }
+
+    res.json({
+      success: true,
+      tokensTried: registrationTokens.length,
+      successCount: response.successCount,
+      failureCount: response.failureCount
+    });
+  } catch (error) {
+    console.error("Error sending multicast notification:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post('/api/test-notification', async (req, res) => {
+  try {
+    const tokens = db.prepare('SELECT token FROM fcm_tokens').all() as { token: string }[];
+    if (tokens.length === 0) {
+      return res.status(404).json({ error: "No subscribers found" });
+    }
+
+    const registrationTokens = tokens.map(t => t.token);
+    const message = {
+      notification: {
+        title: "🔔 Teste de Notificação",
+        body: "Esta é uma mensagem de teste do seu terminal de trading.",
+      },
+      data: {
+        url: '/community',
+        subtitle: 'Teste de Sistema',
+        notificationId: 'test-' + Date.now()
+      },
+      tokens: registrationTokens,
+    };
+
+    const response = await admin.messaging().sendEachForMulticast(message);
+    res.json({ 
+      success: true, 
+      count: response.successCount, 
+      failures: response.failureCount 
+    });
+  } catch (error) {
+    console.error("Error sending test notification:", error);
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/notification-status', (req, res) => {
+  try {
+    const row = db.prepare('SELECT COUNT(*) as count FROM fcm_tokens').get() as any;
+    res.json({ tokenCount: row.count || 0 });
+  } catch (error) {
+    res.json({ tokenCount: 0 });
+  }
 });
 
 if (process.env.NODE_ENV !== "production") {

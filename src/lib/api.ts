@@ -1,108 +1,139 @@
 import { AIResult, CommunityUpdate, DailyAnalysis, SocialProof } from "../types";
 
 const API_BASE = "/api";
+export const API_ROOT = API_BASE;
+
+export async function handleResponse(res: Response) {
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`API Error: ${res.status} ${res.statusText} - ${text.substring(0, 100)}`);
+  }
+  if (!text || text.trim() === "") return null;
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    console.error("JSON Parse Error info:", { text: text.substring(0, 100), status: res.status });
+    // If it's HTML, return null or throw clearer error
+    if (text.trim().startsWith("<!doctype") || text.trim().startsWith("<html")) {
+        console.warn("Received HTML instead of JSON from", res.url);
+        return null;
+    }
+    throw e;
+  }
+}
 
 export const api = {
   // AI Results
   getAIResults: async (): Promise<AIResult[]> => {
     const res = await fetch(`${API_BASE}/ai-results`);
-    return res.json();
+    return handleResponse(res);
   },
   saveAIResult: async (ai: AIResult): Promise<void> => {
-    await fetch(`${API_BASE}/ai-results`, {
+    const res = await fetch(`${API_BASE}/ai-results`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(ai),
     });
+    await handleResponse(res);
   },
   deleteAIResult: async (id: string): Promise<void> => {
-    await fetch(`${API_BASE}/ai-results/${id}`, { method: "DELETE" });
+    const res = await fetch(`${API_BASE}/ai-results/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await handleResponse(res);
   },
 
   // Community
   getCommunityUpdates: async (): Promise<CommunityUpdate[]> => {
     const res = await fetch(`${API_BASE}/community`);
-    return res.json();
+    return handleResponse(res);
   },
   saveCommunityUpdate: async (update: CommunityUpdate): Promise<void> => {
-    await fetch(`${API_BASE}/community`, {
+    const res = await fetch(`${API_BASE}/community`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(update),
     });
+    await handleResponse(res);
   },
   deleteCommunityUpdate: async (id: string): Promise<void> => {
-    await fetch(`${API_BASE}/community/${id}`, { method: "DELETE" });
+    const res = await fetch(`${API_BASE}/community/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await handleResponse(res);
   },
 
   // Analysis
   getDailyAnalysis: async (): Promise<DailyAnalysis | null> => {
     const res = await fetch(`${API_BASE}/analysis`);
-    return res.json();
+    return handleResponse(res);
   },
   saveDailyAnalysis: async (analysis: DailyAnalysis): Promise<void> => {
-    await fetch(`${API_BASE}/analysis`, {
+    const res = await fetch(`${API_BASE}/analysis`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(analysis),
     });
+    await handleResponse(res);
   },
 
   // Social Proofs
   getSocialProofs: async (): Promise<SocialProof[]> => {
     const res = await fetch(`${API_BASE}/social-proofs`);
-    return res.json();
+    return handleResponse(res);
   },
   saveSocialProof: async (proof: SocialProof): Promise<void> => {
-    await fetch(`${API_BASE}/social-proofs`, {
+    const res = await fetch(`${API_BASE}/social-proofs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(proof),
     });
+    await handleResponse(res);
   },
   deleteSocialProof: async (id: string): Promise<void> => {
-    await fetch(`${API_BASE}/social-proofs/${id}`, { method: "DELETE" });
+    const res = await fetch(`${API_BASE}/social-proofs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await handleResponse(res);
   },
 
   // Banners
   getBanners: async () => {
     const res = await fetch(`${API_BASE}/banners`);
-    return res.json();
+    return handleResponse(res);
   },
   saveBanner: async (banner: any) => {
-    await fetch(`${API_BASE}/banners`, {
+    const res = await fetch(`${API_BASE}/banners`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(banner)
     });
+    await handleResponse(res);
   },
   deleteBanner: async (id: string) => {
-    await fetch(`${API_BASE}/banners/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${API_BASE}/banners/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await handleResponse(res);
   },
 
   // Config
   getConfig: async (id: string) => {
-    const res = await fetch(`${API_BASE}/config/${id}`);
-    return res.json();
+    const res = await fetch(`${API_BASE}/config/${encodeURIComponent(id)}`);
+    return handleResponse(res);
   },
   saveConfig: async (id: string, value: any) => {
-    await fetch(`${API_BASE}/config/${id}`, {
+    const res = await fetch(`${API_BASE}/config/${encodeURIComponent(id)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(value)
     });
+    await handleResponse(res);
   },
 
   // News Cache
   getNewsCache: async (id: string) => {
-    const res = await fetch(`${API_BASE}/news-cache/${id}`);
-    return res.json();
+    const res = await fetch(`${API_BASE}/news-cache?id=${encodeURIComponent(id)}`);
+    return handleResponse(res);
   },
   saveNewsCache: async (data: any) => {
-    await fetch(`${API_BASE}/news-cache`, {
+    const res = await fetch(`${API_BASE}/news-cache`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
+    await handleResponse(res);
   },
 };

@@ -41,6 +41,7 @@ import {
 import { useAuth } from './lib/AuthContext';
 import { signInWithGoogle } from './lib/firebase';
 import { CommunityUpdate } from '@/src/types';
+import { handleResponse } from './lib/api';
 
 // Section Components
 import { NewsSection } from './components/NewsSection';
@@ -106,8 +107,10 @@ export default function App() {
         // Diagnostic token count
         try {
           const diagRes = await fetch('/api/notification-status');
-          const diagData = await diagRes.json();
-          console.log("Registered tokens on server:", diagData.tokenCount);
+          const diagData = await handleResponse(diagRes);
+          if (diagData) {
+            console.log("Registered tokens on server:", diagData.tokenCount);
+          }
         } catch (e) {
           console.warn("Failed to fetch diagnostics.");
         }
