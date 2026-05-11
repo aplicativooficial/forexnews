@@ -26,10 +26,11 @@ export function BannersSection({ isAdmin }: { isAdmin: boolean }) {
     const loadBanners = async () => {
       try {
         const data = await api.getBanners();
-        setBanners(data);
+        setBanners(Array.isArray(data) ? data : []);
         setLoading(false);
       } catch (error) {
         console.error("Error loading banners:", error);
+        setLoading(false);
       }
     };
 
@@ -38,7 +39,10 @@ export function BannersSection({ isAdmin }: { isAdmin: boolean }) {
       try {
         const data = await api.getConfig('footer_banner');
         if (data) {
-          setFooterBanner(data);
+          setFooterBanner(prev => ({
+            ...prev,
+            ...data
+          }));
         }
       } catch (error) {
         console.error("Error loading footer config:", error);
@@ -118,71 +122,96 @@ export function BannersSection({ isAdmin }: { isAdmin: boolean }) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
-        {banners.map((banner) => (
-          <motion.div 
-            layout
-            key={banner.id}
-            className="immersive-card flex-row h-fit"
-          >
-             <div className="p-6 flex-1">
-                <div className="flex items-center gap-2 mb-3">
-                    <span className={cn(
-                      "text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest",
-                      banner.badge === 'Recommended' ? "bg-brand-gold/10 text-brand-gold border border-brand-gold/30" : 
-                      banner.badge === 'Exclusive Bonus' ? "bg-brand-green/10 text-brand-green border border-brand-green/30" :
-                      "bg-blue-400/10 text-blue-400 border border-blue-400/30"
-                    )}>
-                       {banner.badge === 'Recommended' ? 'Recomendada' : 
-                        banner.badge === 'Exclusive Bonus' ? 'Bônus' :
-                        'Spread Baixo'}
-                    </span>
-                    <h3 className="text-lg font-bold text-white">{banner.brokerName}</h3>
-                </div>
-                <p className="text-xs text-gray-500 mb-6 line-clamp-2 leading-relaxed italic">"{banner.offer}"</p>
-                <div className="flex items-center gap-4">
-                   <a 
-                     href={banner.ctaUrl} 
-                     target="_blank" 
-                     rel="noopener noreferrer"
-                     className="bg-brand-gold text-bg-dark font-bold px-6 py-2 rounded text-[11px] uppercase tracking-widest golden-gradient hover:scale-105 transition-all"
-                   >
-                     Reivindicar
-                   </a>
-                   {isAdmin && (
-                     <div className="flex gap-2">
-                       <button onClick={() => handleOpenEdit(banner)} className="text-gray-500 hover:text-brand-gold">
-                          <Edit2 className="h-4 w-4" />
-                       </button>
-                       <button onClick={() => handleDelete(banner.id)} className="text-red-400/50 hover:text-red-400">
-                          <Trash2 className="h-4 w-4" />
-                       </button>
-                     </div>
-                   )}
-                </div>
-             </div>
-             <div 
-               className="w-32 h-auto bg-cover bg-center border-l border-border-dim"
-               style={{ backgroundImage: `url(${banner.imageUrl})` }}
-             />
-          </motion.div>
-        ))}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20 min-h-[200px]">
+        {loading ? (
+          <div className="col-span-full flex flex-col items-center justify-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-gold mb-4"></div>
+            <p className="text-xs text-gray-500 uppercase tracking-widest">Carregando bônus...</p>
+          </div>
+        ) : banners.length > 0 ? (
+          banners.map((banner) => (
+            <motion.div 
+              layout
+              key={banner.id}
+              className="immersive-card flex-row h-fit"
+            >
+               <div className="p-6 flex-1">
+                  <div className="flex items-center gap-2 mb-3">
+                      <span className={cn(
+                        "text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest",
+                        banner.badge === 'Recommended' ? "bg-brand-gold/10 text-brand-gold border border-brand-gold/30" : 
+                        banner.badge === 'Exclusive Bonus' ? "bg-brand-green/10 text-brand-green border border-brand-green/30" :
+                        "bg-blue-400/10 text-blue-400 border border-blue-400/30"
+                      )}>
+                         {banner.badge === 'Recommended' ? 'Recomendada' : 
+                          banner.badge === 'Exclusive Bonus' ? 'Bônus' :
+                          'Spread Baixo'}
+                      </span>
+                      <h3 className="text-lg font-bold text-white">{banner.brokerName}</h3>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-6 line-clamp-2 leading-relaxed italic">"{banner.offer}"</p>
+                  <div className="flex items-center gap-4">
+                     <a 
+                       href={banner.ctaUrl} 
+                       target="_blank" 
+                       rel="noopener noreferrer"
+                       className="bg-brand-gold text-bg-dark font-bold px-6 py-2 rounded text-[11px] uppercase tracking-widest golden-gradient hover:scale-105 transition-all"
+                     >
+                       Reivindicar
+                     </a>
+                     {isAdmin && (
+                       <div className="flex gap-2">
+                         <button onClick={() => handleOpenEdit(banner)} className="text-gray-500 hover:text-brand-gold">
+                            <Edit2 className="h-4 w-4" />
+                         </button>
+                         <button onClick={() => handleDelete(banner.id)} className="text-red-400/50 hover:text-red-400">
+                            <Trash2 className="h-4 w-4" />
+                         </button>
+                       </div>
+                     )}
+                  </div>
+               </div>
+               <div 
+                 className="w-32 h-auto bg-cover bg-center border-l border-border-dim"
+                 style={{ backgroundImage: `url(${banner.imageUrl})` }}
+               />
+            </motion.div>
+          ))
+        ) : (
+          <div className="col-span-full border border-dashed border-border-dim rounded-2xl p-12 text-center">
+            <ImageIcon className="h-12 w-12 text-gray-800 mx-auto mb-4" />
+            <h3 className="text-white font-bold mb-2">Nenhum bônus configurado</h3>
+            <p className="text-xs text-text-dim max-w-xs mx-auto">Novas oportunidades e promoções exclusivas serão listadas aqui em breve.</p>
+          </div>
+        )}
       </div>
 
       {/* Featured Banner Strip (Footer style) */}
-      <footer className="mt-auto banner-gradient border border-brand-gold/20 p-6 rounded-xl flex flex-col md:flex-row justify-between items-center gap-6 relative">
-          <div className="flex items-center gap-4 text-center md:text-left">
-            <span className="text-brand-gold font-bold text-lg tracking-widest uppercase">{footerBanner.title}</span>
-            <span className="text-sm text-[#DDD]">{footerBanner.content}</span>
+      <footer className="mt-auto banner-gradient border border-brand-gold/20 p-8 rounded-2xl flex flex-col md:flex-row justify-between items-center gap-8 relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-12 bg-brand-gold/5 blur-3xl rounded-full -mr-12 -mt-12 pointer-events-none" />
+          
+          <div className="flex flex-col md:flex-row items-center gap-6 text-center md:text-left z-10">
+            <div className="w-12 h-12 rounded-full bg-brand-gold/10 flex items-center justify-center border border-brand-gold/20 shrink-0">
+               <Zap className="h-6 w-6 text-brand-gold" />
+            </div>
+            <div>
+              <h4 className="text-brand-gold font-black text-lg tracking-widest uppercase mb-1">
+                {footerBanner.title || 'Bônus Exclusivo:'}
+              </h4>
+              <p className="text-sm text-[#DDD] leading-relaxed max-w-xl">
+                {footerBanner.content || 'Confira nossas oportunidades para maximizar seus lucros no mercado financeiro.'}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
+          
+          <div className="flex items-center gap-4 z-10">
             <a 
-              href={footerBanner.url}
-              target="_blank"
+              href={footerBanner.url || '#'}
+              target="_blank" 
               rel="noopener noreferrer"
-              className="bg-brand-gold text-bg-dark font-bold px-8 py-3 rounded text-[12px] uppercase tracking-[2px] golden-gradient hover:scale-105 transition-all whitespace-nowrap block"
+              className="bg-brand-gold text-bg-dark font-black px-10 py-4 rounded-xl text-[13px] uppercase tracking-[2px] golden-gradient hover:scale-105 transition-all shadow-[0_10px_30px_rgba(212,175,55,0.3)] whitespace-nowrap block"
             >
-              {footerBanner.cta}
+              {footerBanner.cta || 'Começar Agora'}
             </a>
             {isAdmin && (
               <button 
