@@ -3,7 +3,7 @@ import { Newspaper, Clock, ExternalLink, RefreshCw, X, Sparkles, ChevronRight, I
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { NewsItem } from '@/src/types';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { api } from '@/src/lib/api';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -59,7 +59,12 @@ export function NewsSection() {
       return newsItem;
     }
     
-    if (!background) setIsGenerating(true);
+    if (!background) {
+      setIsGenerating(true);
+      // Initialize with description to show something immediate
+      setSelectedNews({ ...item, fullContent: item.description });
+    }
+
     try {
       // 1. Check Local API Cache first
       const cachedData = await api.getNewsCache(item.id);
@@ -77,59 +82,140 @@ export function NewsSection() {
         return updatedItem;
       }
 
-      // 2. Generate if not cached
-      const prompt = `Analista Forex Sênior: Traduza para PT-BR e Analise.
-      Notícia: ${item.title} | ${item.description}
-      
-      Retorne JSON:
-      {
-        "fullContent": "Tradução detalhada do conteúdo e análise de mercado (3-4 parágrafos pequenos)",
-        "summary": "Resumo executivo de 1 frase",
-        "keyPoints": ["Ponto chave 1", "Ponto chave 2", "Ponto chave 3"],
-        "recommendation": "Par e direção recomendada"
-      }`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              fullContent: { type: Type.STRING },
-              summary: { type: Type.STRING },
-              keyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
-              recommendation: { type: Type.STRING }
-            },
-            required: ["fullContent", "summary", "keyPoints", "recommendation"]
+      // Helper to handle retry logic for Rate Limits (429)
+      const callWithRetry = async (fn: () => Promise<any>, retries = 2, delay = 3000): Promise<any> => {
+        try {
+          return await fn();
+        } catch (error: any) {
+          if (error?.message?.includes('429') && retries > 0) {
+            console.log(`Rate limit hit, retrying in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            return callWithRetry(fn, retries - 1, delay * 2);
           }
+          throw error;
+        }
+      };
+
+      // 2. Background processing (JSON only)
+      if (background) {
+        const prompt = `Analista Forex Sênior: Traduza para PT-BR e Analise.
+        Notícia: ${item.title} | ${item.description}
+        
+        Retorne JSON:
+        {
+          "fullContent": "Tradução detalhada do conteúdo e análise de mercado (3-4 parágrafos pequenos)",
+          "summary": "Resumo executivo de 1 frase",
+          "keyPoints": ["Ponto chave 1", "Ponto chave 2", "Ponto chave 3"],
+          "recommendation": "Par e direção recomendada"
+        }`;
+
+        const response = await callWithRetry(() => ai.models.generateContent({
+          model: "gemini-flash-latest",
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: "application/json",
+            temperature: 0.1,
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                fullContent: { type: Type.STRING },
+                summary: { type: Type.STRING },
+                keyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+                recommendation: { type: Type.STRING }
+              },
+              required: ["fullContent", "summary", "keyPoints", "recommendation"]
+            }
+          }
+        }));
+
+        const data = JSON.parse(response.text || '{}');
+        const updatedItem = {
+          ...item,
+          fullContent: data.fullContent,
+          summary: data.summary,
+          keyPoints: data.keyPoints,
+          recommendation: data.recommendation
+        };
+
+        await api.saveNewsCache({
+          id: item.id,
+          fullContent: data.fullContent,
+          summary: data.summary,
+          keyPoints: data.keyPoints,
+          recommendation: data.recommendation
+        });
+
+        setNews(prev => prev.map(n => n.id === item.id ? updatedItem : n));
+        return updatedItem;
+      }
+
+      // 3. Foreground Streaming (Instant per-word display)
+      let streamContent = "";
+      const streamPrompt = `Atue como analista Forex sênior. Traduza e expanda esta notícia para Português do Brasil com análise técnica. 
+      Seja detalhado mas direto (3-4 parágrafos).
+      Notícia: ${item.title} | ${item.description}`;
+
+      const streamResponse = await ai.models.generateContentStream({
+        model: "gemini-flash-latest",
+        contents: streamPrompt,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          temperature: 0.2
         }
       });
 
-      const data = JSON.parse(response.text || '{}');
-      const updatedItem = {
+      // While streaming content, start fetching metadata in parallel
+      const metaPromise = (async () => {
+        const metaPrompt = `Gere resumo curto, 3 pontos chave e recomendação para: ${item.title}. 
+        Retorne JSON { "summary", "keyPoints": [], "recommendation" }.`;
+        
+        const response = await callWithRetry(() => ai.models.generateContent({
+          model: "gemini-flash-latest",
+          contents: metaPrompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                summary: { type: Type.STRING },
+                keyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+                recommendation: { type: Type.STRING }
+              },
+              required: ["summary", "keyPoints", "recommendation"]
+            }
+          }
+        }));
+        return JSON.parse(response.text || '{}');
+      })();
+
+      for await (const chunk of streamResponse) {
+        streamContent += chunk.text;
+        setSelectedNews(prev => prev && prev.id === item.id ? { ...prev, fullContent: streamContent } : prev);
+      }
+
+      const metaData = await metaPromise;
+      const finalItem = {
         ...item,
-        fullContent: data.fullContent,
-        summary: data.summary,
-        keyPoints: data.keyPoints,
-        recommendation: data.recommendation
+        fullContent: streamContent,
+        summary: metaData.summary,
+        keyPoints: metaData.keyPoints,
+        recommendation: metaData.recommendation
       };
 
-      // 3. Save to Local API Cache
+      // Save and sync
       await api.saveNewsCache({
         id: item.id,
-        fullContent: data.fullContent,
-        summary: data.summary,
-        keyPoints: data.keyPoints,
-        recommendation: data.recommendation
+        fullContent: finalItem.fullContent,
+        summary: finalItem.summary,
+        keyPoints: finalItem.keyPoints,
+        recommendation: finalItem.recommendation
       });
 
-      // Update in news list as well
-      setNews(prev => prev.map(n => n.id === item.id ? updatedItem : n));
-      if (!background) setSelectedNews(updatedItem);
-      return updatedItem;
+      setNews(prev => prev.map(n => n.id === item.id ? finalItem : n));
+      setSelectedNews(finalItem);
+      return finalItem;
     } catch (error) {
       console.error("AI Insights error:", error);
       return item;
@@ -154,43 +240,65 @@ export function NewsSection() {
         }));
       }
 
-      const prompt = `Traduza para PT-BR (Forex Técnico). Retorne JSON { "translations": [{ "id", "title", "description" }] }.
-      Notícias:
-      ${toTranslate.map(item => `ID: ${item.id}\nTitle: ${item.title}\nDescription: ${item.description}`).join('\n\n')}`;
+      // Translate in smaller batches and update state incrementally
+      const BATCH_SIZE = 4;
+      for (let i = 0; i < toTranslate.length; i += BATCH_SIZE) {
+        // Add a small delay between batches to avoid immediate rate limits
+        if (i > 0) await new Promise(resolve => setTimeout(resolve, 1500));
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              translations: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    id: { type: Type.STRING },
-                    title: { type: Type.STRING },
-                    description: { type: Type.STRING }
-                  },
-                  required: ["id", "title", "description"]
+        const batch = toTranslate.slice(i, i + BATCH_SIZE);
+        const prompt = `Traduza para PT-BR (Forex Técnico). Retorne JSON { "translations": [{ "id", "title", "description" }] }.
+        Notícias:
+        ${batch.map(item => `ID: ${item.id}\nTitle: ${item.title}\nDescription: ${item.description}`).join('\n\n')}`;
+
+        const response = await ai.models.generateContent({
+          model: "gemini-flash-latest",
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: "application/json",
+            temperature: 0.1,
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                translations: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      title: { type: Type.STRING },
+                      description: { type: Type.STRING }
+                    },
+                    required: ["id", "title", "description"]
+                  }
                 }
               }
             }
           }
-        }
-      });
+        });
 
-      const json = JSON.parse(response.text || '{}');
-      const translatedData = json.translations || [];
-      
-      translatedData.forEach((t: any) => {
-        cache[t.id] = { title: t.title, description: t.description };
-      });
-      localStorage.setItem(cacheKey, JSON.stringify(cache));
+        const json = JSON.parse(response.text || '{}');
+        const translatedData = json.translations || [];
+        
+        translatedData.forEach((t: any) => {
+          cache[t.id] = { title: t.title, description: t.description };
+        });
+        localStorage.setItem(cacheKey, JSON.stringify(cache));
+        
+        // Update state with newly translated items
+        setNews(prev => prev.map(item => {
+          const trans = cache[item.id];
+          if (trans) {
+            return {
+              ...item,
+              title: trans.title,
+              description: trans.description
+            };
+          }
+          return item;
+        }));
+      }
       
       return items.map(item => {
         const translation = cache[item.id];
@@ -240,10 +348,12 @@ export function NewsSection() {
       
       const translatedNews = await translateNews(mappedNews);
       setNews(translatedNews);
+      checkAndNotify(translatedNews);
 
-      // Trigger background AI generation for top news with delay to avoid rate limits
-      translatedNews.slice(0, 8).forEach((item, index) => {
-        setTimeout(() => generateAiInsights(item, true), index * 1000);
+      // Trigger background AI generation for top news with slow delay to strictly follow rate limits
+      // Reduce to top 4 news to be safe
+      translatedNews.slice(0, 4).forEach((item, index) => {
+        setTimeout(() => generateAiInsights(item, true), index * 2000);
       });
     } catch (error) {
       console.error("Error fetching news:", error);
