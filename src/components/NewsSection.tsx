@@ -52,6 +52,13 @@ export function NewsSection() {
   };
 
   const generateAiInsights = async (item: NewsItem, background = false) => {
+    // Check if this item is already being processed to avoid duplicate calls
+    const newsItem = news.find(n => n.id === item.id);
+    if (newsItem?.fullContent && newsItem?.summary) {
+      if (!background) setSelectedNews(newsItem);
+      return newsItem;
+    }
+    
     if (!background) setIsGenerating(true);
     try {
       // 1. Check Local API Cache first
@@ -71,24 +78,15 @@ export function NewsSection() {
       }
 
       // 2. Generate if not cached
-      const prompt = `Você é um analista sênior de Forex. Analise a seguinte notícia e forneça:
-      1. Uma tradução completa e fluida do conteúdo para Português (se o conteúdo for curto, expanda-o com base em seu conhecimento de mercado para explicar o impacto).
-      2. Um resumo executivo curto (máximo 2 frases).
-      3. Pontos principais (exatamente 3 bullet points).
-      4. Recomendação de par de moedas mais afetado.
-
-      Notícia original:
-      Título: ${item.title}
-      Fonte: ${item.source}
-      Moeda: ${item.currency}
-      Descrição: ${item.description}
-
-      Retorne APENAS um JSON válido:
+      const prompt = `Analista Forex Sênior: Traduza para PT-BR e Analise.
+      Notícia: ${item.title} | ${item.description}
+      
+      Retorne JSON:
       {
-        "fullContent": "texto traduzido e expandido",
-        "summary": "resumo curto",
-        "keyPoints": ["ponto 1", "ponto 2", "ponto 3"],
-        "recommendation": "par recomendado"
+        "fullContent": "Tradução detalhada do conteúdo e análise de mercado (3-4 parágrafos pequenos)",
+        "summary": "Resumo executivo de 1 frase",
+        "keyPoints": ["Ponto chave 1", "Ponto chave 2", "Ponto chave 3"],
+        "recommendation": "Par e direção recomendada"
       }`;
 
       const response = await ai.models.generateContent({
@@ -96,7 +94,7 @@ export function NewsSection() {
         contents: prompt,
         config: {
           responseMimeType: "application/json",
-          temperature: 0.2,
+          temperature: 0.1,
           responseSchema: {
             type: Type.OBJECT,
             properties: {
@@ -156,9 +154,7 @@ export function NewsSection() {
         }));
       }
 
-      const prompt = `Traduza os seguintes títulos e descrições de notícias de Forex de Inglês para Português do Brasil. Mantenha o tom profissional e técnico.
-      Format o resultado como um objeto JSON contendo um array de objetos com os campos "id", "title" e "description".
-      
+      const prompt = `Traduza para PT-BR (Forex Técnico). Retorne JSON { "translations": [{ "id", "title", "description" }] }.
       Notícias:
       ${toTranslate.map(item => `ID: ${item.id}\nTitle: ${item.title}\nDescription: ${item.description}`).join('\n\n')}`;
 
@@ -234,18 +230,20 @@ export function NewsSection() {
         title: item.title,
         source: 'FXStreet',
         time: new Date(item.pubDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-        description: item.description.replace(/<[^>]*>?/gm, '').substring(0, 150) + '...',
+        description: item.description.replace(/<[^>]*>?/gm, '').trim(),
         url: item.link,
         impact: index % 3 === 0 ? 'high' : index % 3 === 1 ? 'medium' : 'low',
-        currency: item.title.includes('USD') ? 'USD' : item.title.includes('EUR') ? 'EUR' : item.title.includes('GOLD') ? 'XAU' : 'Macro'
+        currency: item.title.includes('USD') || item.title.includes('FED') || item.title.includes('Inflation') ? 'USD' : 
+                  item.title.includes('EUR') || item.title.includes('ECB') ? 'EUR' : 
+                  item.title.includes('GOLD') || item.title.includes('XAU') ? 'XAU' : 'Macro'
       }));
       
       const translatedNews = await translateNews(mappedNews);
       setNews(translatedNews);
 
-      // Trigger background AI generation for top 3 high-impact news
-      translatedNews.filter(n => n.impact === 'high').slice(0, 3).forEach(item => {
-        generateAiInsights(item, true);
+      // Trigger background AI generation for top news with delay to avoid rate limits
+      translatedNews.slice(0, 8).forEach((item, index) => {
+        setTimeout(() => generateAiInsights(item, true), index * 1000);
       });
     } catch (error) {
       console.error("Error fetching news:", error);
@@ -447,9 +445,18 @@ export function NewsSection() {
 
                     <div className="prose prose-invert max-w-none">
                       <div className="space-y-6">
-                        <p className="text-gray-300 text-lg leading-relaxed font-light">
-                          {selectedNews.fullContent || selectedNews.description}
-                        </p>
+                        <AnimatePresence mode="wait">
+                          <motion.div 
+                            key={selectedNews.fullContent ? 'full' : 'desc'}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ duration: 0.3 }}
+                          >
+                            <p className="text-gray-300 text-lg leading-relaxed font-light whitespace-pre-wrap">
+                              {selectedNews.fullContent || selectedNews.description}
+                            </p>
+                          </motion.div>
+                        </AnimatePresence>
                         
                         {isGenerating && !selectedNews.fullContent && (
                           <div className="space-y-4 py-4">
@@ -457,7 +464,7 @@ export function NewsSection() {
                             <div className="h-4 bg-white/5 rounded-full w-[90%] animate-pulse" />
                             <div className="flex items-center gap-3 mt-4">
                                <Sparkles className="h-4 w-4 text-brand-gold animate-spin" />
-                               <span className="text-[10px] font-black uppercase tracking-widest text-brand-gold animate-pulse">Expandindo conteúdo via IA...</span>
+                               <span className="text-[10px] font-black uppercase tracking-widest text-brand-gold animate-pulse">Sincronizando Análise em Tempo Real...</span>
                             </div>
                           </div>
                         )}
@@ -488,16 +495,19 @@ export function NewsSection() {
                         <Sparkles className="h-4 w-4 text-brand-gold" /> Sumário IA
                       </h3>
                       
-                      {isGenerating ? (
+                      {isGenerating && !selectedNews.summary ? (
                         <div className="space-y-3">
                           <div className="h-2 bg-white/5 rounded-full w-full animate-pulse" />
                           <div className="h-2 bg-white/5 rounded-full w-[80%] animate-pulse" />
-                          <div className="h-2 bg-white/5 rounded-full w-[90%] animate-pulse" />
                         </div>
                       ) : (
-                        <p className="text-[13px] text-gray-400 leading-relaxed italic">
-                          "{selectedNews.summary || "Aguardando geração..."}"
-                        </p>
+                        <motion.p 
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="text-[13px] text-gray-400 leading-relaxed italic"
+                        >
+                          "{selectedNews.summary || "Processando síntese de IA..."}"
+                        </motion.p>
                       )}
                     </div>
 
