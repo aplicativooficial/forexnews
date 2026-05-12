@@ -124,6 +124,8 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
         id: editingId || crypto.randomUUID(),
         name: newResult.name || 'Nova IA',
         logo: newResult.logo || `https://api.dicebear.com/7.x/bottts/svg?seed=${newResult.name}&backgroundColor=D4AF37`,
+        dailyReturn: Number(newResult.dailyReturn) || 0,
+        weeklyReturn: Number(newResult.weeklyReturn) || 0,
         currentMonthReturn: Number(newResult.currentMonthReturn) || 0,
         yearCumulativeReturn: Number(newResult.yearCumulativeReturn) || 0,
         maxDrawdown: Number(newResult.maxDrawdown) || 0,
@@ -247,21 +249,27 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
 
              <div className="p-5 flex flex-col sm:flex-row gap-6">
                 <div className="flex-1 space-y-4">
-                   <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Resultado do dia anterior</span>
-                      <span className={cn(
-                        "text-lg font-bold font-mono",
-                        ai.currentMonthReturn >= 0 ? "text-brand-green" : "text-brand-red"
-                      )}>{ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn}%</span>
-                   </div>
-                   <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Resultado semanal</span>
-                      <span className="text-sm font-bold text-white font-mono">{ai.winRate}%</span>
-                   </div>
-                   <div className="flex justify-between items-end border-b border-white/5 pb-2">
-                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Resultado do mês</span>
-                      <span className="text-sm font-bold text-white font-mono">{ai.totalTradesMonth}%</span>
-                   </div>
+                    <div className="flex justify-between items-end border-b border-white/5 pb-2">
+                       <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Resultado do dia anterior</span>
+                       <span className={cn(
+                         "text-lg font-bold font-mono",
+                         (ai.dailyReturn ?? 0) >= 0 ? "text-brand-green" : "text-brand-red"
+                       )}>{(ai.dailyReturn ?? 0) >= 0 ? '+' : ''}{ai.dailyReturn ?? 0}%</span>
+                    </div>
+                    <div className="flex justify-between items-end border-b border-white/5 pb-2">
+                       <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Resultado semanal</span>
+                       <span className={cn(
+                         "text-sm font-bold font-mono",
+                         (ai.weeklyReturn ?? 0) >= 0 ? "text-brand-green" : "text-brand-red"
+                       )}>{(ai.weeklyReturn ?? 0) >= 0 ? '+' : ''}{ai.weeklyReturn ?? 0}%</span>
+                    </div>
+                    <div className="flex justify-between items-end border-b border-white/5 pb-2">
+                       <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Resultado do mês</span>
+                       <span className={cn(
+                         "text-sm font-bold font-mono",
+                         ai.currentMonthReturn >= 0 ? "text-brand-green" : "text-brand-red"
+                       )}>{ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn}%</span>
+                    </div>
                 </div>
              </div>
 
@@ -332,6 +340,14 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
                 </div>
                 <div>
                    <label className="block text-sm text-gray-400 mb-1">Resultado do dia anterior (%)</label>
+                   <input required type="number" step="0.01" value={newResult.dailyReturn || ''} onChange={(e) => setNewResult({...newResult, dailyReturn: e.target.value})} className="w-full bg-bg-dark border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-brand-gold text-white" />
+                </div>
+                <div>
+                   <label className="block text-sm text-gray-400 mb-1">Resultado semanal (%)</label>
+                   <input required type="number" step="0.01" value={newResult.weeklyReturn || ''} onChange={(e) => setNewResult({...newResult, weeklyReturn: e.target.value})} className="w-full bg-bg-dark border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-brand-gold text-white" />
+                </div>
+                <div>
+                   <label className="block text-sm text-gray-400 mb-1">Resultado do mês (%)</label>
                    <input required type="number" step="0.01" value={newResult.currentMonthReturn || ''} onChange={(e) => setNewResult({...newResult, currentMonthReturn: e.target.value})} className="w-full bg-bg-dark border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-brand-gold text-white" />
                 </div>
                 <div>
@@ -343,11 +359,11 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
                    <input required type="number" step="0.01" value={newResult.maxDrawdown || ''} onChange={(e) => setNewResult({...newResult, maxDrawdown: e.target.value})} className="w-full bg-bg-dark border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-brand-gold text-white" />
                 </div>
                 <div>
-                   <label className="block text-sm text-gray-400 mb-1">Resultado semanal (%)</label>
+                   <label className="block text-sm text-gray-400 mb-1">Win Rate (%)</label>
                    <input required type="number" step="0.01" value={newResult.winRate || ''} onChange={(e) => setNewResult({...newResult, winRate: e.target.value})} className="w-full bg-bg-dark border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-brand-gold text-white" />
                 </div>
                 <div>
-                   <label className="block text-sm text-gray-400 mb-1">Resultado do mês</label>
+                   <label className="block text-sm text-gray-400 mb-1">Total Trades (Mês)</label>
                    <input required type="number" value={newResult.totalTradesMonth || ''} onChange={(e) => setNewResult({...newResult, totalTradesMonth: e.target.value})} className="w-full bg-bg-dark border border-gray-700 rounded-xl px-4 py-3 focus:outline-none focus:border-brand-gold text-white" />
                 </div>
                 <div>

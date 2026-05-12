@@ -542,14 +542,21 @@ async function syncSpreadsheet() {
     const existingResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
 
     for (const row of rows) {
+      const parseVal = (v: any) => {
+        if (typeof v === 'number') return v;
+        if (typeof v === 'string') return parseFloat(v.replace(',', '.').replace('%', ''));
+        return 0;
+      };
+
       const traderName = row.c[0]?.v || ''; // A: Trader
       const sourceName = row.c[1]?.v || ''; // B: Fonte
-      const monthlyReturn = parseFloat(row.c[2]?.v) || 0; // C: Retorno Mensal
-      const winRate = parseFloat(row.c[3]?.v) || 0; // D: Win Rate
-      const trades = parseInt(row.c[4]?.v) || 0; // E: Trades
-      const statusStr = row.c[6]?.v || ''; // G: Status
-      const maxDrawdown = parseFloat(row.c[7]?.v) || 0; // H: Max Drawdown
-      const externalUrl = row.c[8]?.v || ''; // I: Link de Monitoramento
+      const dailyReturn = parseVal(row.c[2]?.v); // C: Resultado Dia Anterior (%)
+      const weeklyReturn = parseVal(row.c[3]?.v); // D: Resultado Semanal (%)
+      const monthlyReturn = parseVal(row.c[4]?.v); // E: Resultado Mês (%)
+      const lastUpdateVal = row.c[5]?.v || ''; // F: Última Atualização
+      const statusStr = String(row.c[6]?.v || ''); // G: Status
+      const maxDrawdown = parseVal(row.c[7]?.v); // H: Redução máxima (%)
+      const externalUrl = String(row.c[8]?.v || ''); // I: Link de Monitoramento
 
       if (!traderName) continue;
 
@@ -566,14 +573,16 @@ async function syncSpreadsheet() {
         name: traderName,
         source: sourceName,
         logo: targetIA?.logo || `https://api.dicebear.com/7.x/bottts/svg?seed=${searchName}&backgroundColor=D4AF37`,
+        dailyReturn: Number(dailyReturn.toFixed(2)),
+        weeklyReturn: Number(weeklyReturn.toFixed(2)),
         currentMonthReturn: Number(monthlyReturn.toFixed(2)),
         yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
-        winRate: Number(winRate.toFixed(2)),
-        totalTradesMonth: Number(trades),
-        maxDrawdown: Number(maxDrawdown),
+        winRate: targetIA?.winRate || 0,
+        totalTradesMonth: targetIA?.totalTradesMonth || 0,
+        maxDrawdown: Number(maxDrawdown.toFixed(2)),
         equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
         status: (statusStr.includes('✅') || statusStr.includes('Ativo')) ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
-        lastSync: new Date().toLocaleTimeString('pt-BR'),
+        lastSync: lastUpdateVal || new Date().toLocaleTimeString('pt-BR'),
         isLive: true,
         trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
       };

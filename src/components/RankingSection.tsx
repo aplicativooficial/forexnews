@@ -46,16 +46,16 @@ export function RankingSection() {
   }, []);
 
   const sortedResults = [...results].sort((a, b) => {
-    if (sortBy === 'month') return b.currentMonthReturn - a.currentMonthReturn;
-    if (sortBy === 'winrate') return b.winRate - a.winRate;
-    if (sortBy === 'totalMonth') return b.totalTradesMonth - a.totalTradesMonth;
+    if (sortBy === 'month') return (b.dailyReturn || 0) - (a.dailyReturn || 0);
+    if (sortBy === 'winrate') return (b.weeklyReturn || 0) - (a.weeklyReturn || 0);
+    if (sortBy === 'totalMonth') return b.currentMonthReturn - a.currentMonthReturn;
     return 0;
   });
 
   const exportCSV = () => {
     const headers = ['Posição,IA,Resultado do dia anterior (%),Resultado semanal (%),Resultado mensal (%)'];
     const rows = sortedResults.map((ai, idx) => 
-      `${idx + 1},${ai.name},${ai.currentMonthReturn},${ai.winRate},${ai.totalTradesMonth}`
+      `${idx + 1},${ai.name},${ai.dailyReturn || 0},${ai.weeklyReturn || 0},${ai.currentMonthReturn}`
     );
     const content = headers.concat(rows).join('\n');
     const blob = new Blob([content], { type: 'text/csv' });
@@ -77,9 +77,9 @@ export function RankingSection() {
   };
 
   const chartValues = sortedResults.map(r => {
-    if (sortBy === 'month') return r.currentMonthReturn;
-    if (sortBy === 'winrate') return r.winRate;
-    return r.totalTradesMonth;
+    if (sortBy === 'month') return r.dailyReturn || 0;
+    if (sortBy === 'winrate') return r.weeklyReturn || 0;
+    return r.currentMonthReturn;
   });
 
   const barData = {
@@ -157,10 +157,10 @@ export function RankingSection() {
                   </div>
                   <div className={cn(
                     "text-lg font-mono font-bold",
-                    (sortBy === 'month' ? ai.currentMonthReturn : sortBy === 'winrate' ? ai.winRate : ai.totalTradesMonth) >= 0 ? "text-brand-green" : "text-brand-red"
+                    (sortBy === 'month' ? (ai.dailyReturn || 0) : sortBy === 'winrate' ? (ai.weeklyReturn || 0) : ai.currentMonthReturn) >= 0 ? "text-brand-green" : "text-brand-red"
                   )}>
-                    {(sortBy === 'month' ? ai.currentMonthReturn : sortBy === 'winrate' ? ai.winRate : ai.totalTradesMonth) >= 0 ? '+' : ''}
-                    {(sortBy === 'month' ? ai.currentMonthReturn : sortBy === 'winrate' ? ai.winRate : ai.totalTradesMonth).toFixed(2)}%
+                    {(sortBy === 'month' ? (ai.dailyReturn || 0) : sortBy === 'winrate' ? (ai.weeklyReturn || 0) : ai.currentMonthReturn) >= 0 ? '+' : ''}
+                    {(sortBy === 'month' ? (ai.dailyReturn || 0) : sortBy === 'winrate' ? (ai.weeklyReturn || 0) : ai.currentMonthReturn).toFixed(2)}%
                   </div>
                 </div>
                 
@@ -169,18 +169,28 @@ export function RankingSection() {
                     <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Dia Anterior</span>
                     <span className={cn(
                       "text-xs font-mono font-bold",
-                      ai.currentMonthReturn >= 0 ? "text-brand-green" : "text-brand-red"
+                      (ai.dailyReturn || 0) >= 0 ? "text-brand-green" : "text-brand-red"
                     )}>
-                      {ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn.toFixed(2)}%
+                      {(ai.dailyReturn || 0) >= 0 ? '+' : ''}{(ai.dailyReturn || 0).toFixed(2)}%
                     </span>
                   </div>
                   <div className="flex flex-col border-l border-white/5 pl-3">
                     <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Res. Semanal</span>
-                    <span className="text-xs font-mono text-[#DDD]">{ai.winRate}%</span>
+                    <span className={cn(
+                      "text-xs font-mono font-bold",
+                      (ai.weeklyReturn || 0) >= 0 ? "text-brand-green" : "text-brand-red"
+                    )}>
+                      {(ai.weeklyReturn || 0) >= 0 ? '+' : ''}{(ai.weeklyReturn || 0).toFixed(2)}%
+                    </span>
                   </div>
                   <div className="flex flex-col pt-3 border-t border-white/5">
                     <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Res. Mensal</span>
-                    <span className="text-xs font-mono text-[#DDD]">{ai.totalTradesMonth}%</span>
+                    <span className={cn(
+                      "text-xs font-mono font-bold",
+                      ai.currentMonthReturn >= 0 ? "text-brand-green" : "text-brand-red"
+                    )}>
+                      {ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn.toFixed(2)}%
+                    </span>
                   </div>
                   <div className="flex flex-col pt-3 border-t border-l border-white/5 pl-3 text-right">
                     <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Ações</span>
@@ -235,15 +245,21 @@ export function RankingSection() {
                     </td>
                     <td className={cn(
                       "px-6 py-4 text-right font-mono font-bold text-[13px]",
+                      (ai.dailyReturn || 0) >= 0 ? "text-brand-green" : "text-brand-red"
+                    )}>
+                      {(ai.dailyReturn || 0) >= 0 ? '+' : ''}{(ai.dailyReturn || 0).toFixed(2)}%
+                    </td>
+                    <td className={cn(
+                      "px-6 py-4 text-right font-mono font-bold text-[11px]",
+                      (ai.weeklyReturn || 0) >= 0 ? "text-brand-green" : "text-brand-red"
+                    )}>
+                       {(ai.weeklyReturn || 0) >= 0 ? '+' : ''}{(ai.weeklyReturn || 0).toFixed(2)}%
+                    </td>
+                    <td className={cn(
+                      "px-6 py-4 text-right font-mono font-bold text-[11px]",
                       ai.currentMonthReturn >= 0 ? "text-brand-green" : "text-brand-red"
                     )}>
-                      {ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn.toFixed(2)}%
-                    </td>
-                    <td className="px-6 py-4 text-right font-mono text-gray-400 text-[11px] font-bold">
-                       {ai.winRate}%
-                    </td>
-                    <td className="px-6 py-4 text-right font-mono text-gray-400 text-[11px] font-bold">
-                       {ai.totalTradesMonth}%
+                       {ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn.toFixed(2)}%
                     </td>
                     <td className="px-6 py-4 text-right">
                        {ai.trackingUrl ? (

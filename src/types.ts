@@ -51,6 +51,8 @@ export interface AIResult {
   name: string;
   source?: string; // New field for Broker/Brokerage name
   logo: string;
+  dailyReturn?: number;
+  weeklyReturn?: number;
   currentMonthReturn: number;
   yearCumulativeReturn: number;
   maxDrawdown: number;
