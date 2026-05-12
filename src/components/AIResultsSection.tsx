@@ -273,19 +273,8 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
                 </div>
              </div>
 
-             <div className="px-5 pb-5 flex items-center justify-between gap-4">
-                {ai.trackingUrl && (
-                  <a 
-                    href={ai.trackingUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-1 bg-white/5 border border-white/10 hover:bg-white/10 text-white font-bold py-2 rounded text-[10px] uppercase tracking-widest text-center transition-all flex items-center justify-center gap-2"
-                  >
-                    <Activity className="h-3 w-3 text-brand-green" />
-                    Monitorar em Tempo Real
-                  </a>
-                )}
-                {isAdmin && (
+             {isAdmin && (
+               <div className="px-5 pb-5">
                   <div className="flex justify-end gap-2 shrink-0">
                      <button 
                        onClick={() => handleOpenEdit(ai)}
@@ -300,8 +289,8 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
                        <Trash2 className="h-4 w-4" />
                      </button>
                   </div>
-                )}
-             </div>
+               </div>
+             )}
           </motion.div>
         ))}
       </div>

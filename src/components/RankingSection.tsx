@@ -192,16 +192,6 @@ export function RankingSection() {
                       {ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn.toFixed(2)}%
                     </span>
                   </div>
-                  <div className="flex flex-col pt-3 border-t border-l border-white/5 pl-3 text-right">
-                    <span className="text-[9px] text-gray-500 uppercase font-bold tracking-widest">Ações</span>
-                    {ai.trackingUrl ? (
-                      <a href={ai.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-brand-gold flex items-center justify-end gap-1">
-                        Ver <ArrowUpRight className="h-3 w-3" />
-                      </a>
-                    ) : (
-                      <span className="text-xs text-gray-600">N/A</span>
-                    )}
-                  </div>
                 </div>
               </div>
             ))}
@@ -217,7 +207,6 @@ export function RankingSection() {
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-gray-500 text-right">Resultado do dia anterior</th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-gray-500 text-right">Resultado semanal</th>
                   <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-gray-500 text-right">Resultado mensal</th>
-                  <th className="px-6 py-4 text-[11px] font-bold uppercase tracking-widest text-gray-500 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-dim">
@@ -260,21 +249,6 @@ export function RankingSection() {
                       ai.currentMonthReturn >= 0 ? "text-brand-green" : "text-brand-red"
                     )}>
                        {ai.currentMonthReturn >= 0 ? '+' : ''}{ai.currentMonthReturn.toFixed(2)}%
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                       {ai.trackingUrl ? (
-                         <a 
-                           href={ai.trackingUrl} 
-                           target="_blank" 
-                           rel="noopener noreferrer" 
-                           className="text-[10px] uppercase font-bold text-brand-gold hover:underline inline-flex items-center gap-1"
-                         >
-                           Acompanhar
-                           <ArrowUpRight className="h-3 w-3" />
-                         </a>
-                       ) : (
-                         <button className="text-[10px] uppercase font-bold text-brand-gold hover:underline">Auditar</button>
-                       )}
                     </td>
                   </tr>
                 ))}

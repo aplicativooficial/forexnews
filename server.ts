@@ -518,6 +518,69 @@ app.get('/api/notification-status', async (req, res) => {
   }
 });
 
+// Function to update results from data array (used by spreadsheet and manual push)
+async function updateAIResultsFromData(data: any[]) {
+  if (!db) return;
+  const snapshot = await db.collection('ai_results').get();
+  const existingResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+
+  for (const item of data) {
+    const traderName = item.trader || '';
+    const sourceName = item.source || '';
+    const dailyReturn = Number(item.daily) || 0;
+    const weeklyReturn = Number(item.weekly) || 0;
+    const monthlyReturn = Number(item.monthly) || 0;
+    const lastUpdateVal = item.lastUpdate || '';
+    const statusStr = String(item.status || '');
+    const maxDrawdown = Number(item.drawdown) || 0;
+    const externalUrl = String(item.url || '');
+
+    if (!traderName) continue;
+
+    const normalizedName = `${traderName} ${sourceName}`.trim();
+    const searchName = normalizedName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    const targetIA = existingResults.find(r => {
+       const dbName = `${r.name} ${r.source || ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+       return dbName.includes(searchName) || searchName.includes(dbName);
+    });
+
+    let logoUrl = targetIA?.logo;
+    if (!logoUrl) {
+      if (searchName.includes('btc')) {
+         logoUrl = 'https://cdn.pixabay.com/photo/2017/01/25/12/31/bitcoin-2007769_1280.png';
+      } else if (searchName.includes('sniper')) {
+         logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=sniper&backgroundColor=D4AF37`;
+      } else if (searchName.includes('hft')) {
+         logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=hft&backgroundColor=D4AF37`;
+      } else {
+         logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=${searchName}&backgroundColor=D4AF37`;
+      }
+    }
+
+    const aiData = {
+      id: targetIA?.id || randomUUID(),
+      name: traderName,
+      source: sourceName,
+      logo: logoUrl,
+      dailyReturn: Number(dailyReturn.toFixed(2)),
+      weeklyReturn: Number(weeklyReturn.toFixed(2)),
+      currentMonthReturn: Number(monthlyReturn.toFixed(2)),
+      yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
+      winRate: targetIA?.winRate || item.winRate || 0,
+      totalTradesMonth: targetIA?.totalTradesMonth || item.trades || 0,
+      maxDrawdown: Number(maxDrawdown.toFixed(2)),
+      equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
+      status: (statusStr.includes('✅') || statusStr.includes('Ativo') || statusStr === 'Active') ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
+      lastSync: lastUpdateVal || new Date().toLocaleTimeString('pt-BR'),
+      isLive: true,
+      trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
+    };
+
+    await db.collection('ai_results').doc(aiData.id).set(aiData, { merge: true });
+  }
+}
+
 async function syncSpreadsheet() {
   if (!db) return;
   console.log("Starting background spreadsheet sync...");
@@ -526,69 +589,32 @@ async function syncSpreadsheet() {
     const response = await fetch(SPREADSHEET_URL);
     const text = await response.text();
     
-    // The response is wrapped in a google callback: google.visualization.Query.setResponse({...});
-    // Find the opening { and closing }
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
-    if (start === -1 || end === -1) {
-      throw new Error('Invalid spreadsheet response format');
-    }
+    if (start === -1 || end === -1) throw new Error('Invalid spreadsheet response format');
     
-    const jsonStr = text.substring(start, end + 1);
-    const json = JSON.parse(jsonStr);
+    const json = JSON.parse(text.substring(start, end + 1));
     const rows = json.table.rows;
 
-    const snapshot = await db.collection('ai_results').get();
-    const existingResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+    const parseVal = (v: any) => {
+      if (typeof v === 'number') return v;
+      if (typeof v === 'string') return parseFloat(v.replace(',', '.').replace('%', ''));
+      return 0;
+    };
 
-    for (const row of rows) {
-      const parseVal = (v: any) => {
-        if (typeof v === 'number') return v;
-        if (typeof v === 'string') return parseFloat(v.replace(',', '.').replace('%', ''));
-        return 0;
-      };
+    const dataToSync = rows.map((row: any) => ({
+      trader: row.c[0]?.v || '',
+      source: row.c[1]?.v || '',
+      daily: parseVal(row.c[2]?.v),
+      weekly: parseVal(row.c[3]?.v),
+      monthly: parseVal(row.c[4]?.v),
+      lastUpdate: row.c[5]?.v || '',
+      status: row.c[6]?.v || '',
+      drawdown: parseVal(row.c[7]?.v),
+      url: row.c[8]?.v || ''
+    }));
 
-      const traderName = row.c[0]?.v || ''; // A: Trader
-      const sourceName = row.c[1]?.v || ''; // B: Fonte
-      const dailyReturn = parseVal(row.c[2]?.v); // C: Resultado Dia Anterior (%)
-      const weeklyReturn = parseVal(row.c[3]?.v); // D: Resultado Semanal (%)
-      const monthlyReturn = parseVal(row.c[4]?.v); // E: Resultado Mês (%)
-      const lastUpdateVal = row.c[5]?.v || ''; // F: Última Atualização
-      const statusStr = String(row.c[6]?.v || ''); // G: Status
-      const maxDrawdown = parseVal(row.c[7]?.v); // H: Redução máxima (%)
-      const externalUrl = String(row.c[8]?.v || ''); // I: Link de Monitoramento
-
-      if (!traderName) continue;
-
-      const normalizedName = `${traderName} ${sourceName}`.trim();
-      const searchName = normalizedName.toLowerCase().replace(/[^a-z0-9]/g, '');
-      
-      const targetIA = existingResults.find(r => {
-         const dbName = `${r.name} ${r.source || ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-         return dbName.includes(searchName) || searchName.includes(dbName);
-      });
-
-      const aiData = {
-        id: targetIA?.id || randomUUID(),
-        name: traderName,
-        source: sourceName,
-        logo: targetIA?.logo || `https://api.dicebear.com/7.x/bottts/svg?seed=${searchName}&backgroundColor=D4AF37`,
-        dailyReturn: Number(dailyReturn.toFixed(2)),
-        weeklyReturn: Number(weeklyReturn.toFixed(2)),
-        currentMonthReturn: Number(monthlyReturn.toFixed(2)),
-        yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
-        winRate: targetIA?.winRate || 0,
-        totalTradesMonth: targetIA?.totalTradesMonth || 0,
-        maxDrawdown: Number(maxDrawdown.toFixed(2)),
-        equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
-        status: (statusStr.includes('✅') || statusStr.includes('Ativo')) ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
-        lastSync: lastUpdateVal || new Date().toLocaleTimeString('pt-BR'),
-        isLive: true,
-        trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
-      };
-
-      await db.collection('ai_results').doc(aiData.id).set(aiData, { merge: true });
-    }
+    await updateAIResultsFromData(dataToSync);
     console.log("Background spreadsheet sync completed successfully.");
   } catch (err) {
     console.error("Background sync error:", err);
@@ -600,6 +626,25 @@ app.post('/api/admin/sync-sheet', async (req, res) => {
   try {
     await syncSpreadsheet();
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// n8n / External Sync Endpoint
+app.post('/api/admin/push-results', async (req, res) => {
+  const apiKey = req.headers['x-api-key'];
+  if (process.env.SYNC_API_KEY && apiKey !== process.env.SYNC_API_KEY) {
+    return res.status(401).json({ error: "Invalid API Key" });
+  }
+
+  try {
+    const { data } = req.body;
+    if (!Array.isArray(data)) {
+      return res.status(400).json({ error: "Payload must contain a 'data' array" });
+    }
+    await updateAIResultsFromData(data);
+    res.json({ success: true, message: `${data.length} results processed` });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

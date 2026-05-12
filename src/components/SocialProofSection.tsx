@@ -15,7 +15,7 @@ export function SocialProofSection({ isAdmin }: { isAdmin: boolean }) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
   const [newProof, setNewProof] = useState<Partial<SocialProof>>({
-    iaName: 'HFTGOLD Última Markets'
+    iaName: 'HFTGOLD ULTIMA'
   });
 
   useEffect(() => {
@@ -40,10 +40,14 @@ export function SocialProofSection({ isAdmin }: { isAdmin: boolean }) {
         const data = await api.getAIResults();
         const names = data.map(ai => ai.name);
         setAvailableIAs(names.length > 0 ? names : [
-          'HFTGOLD Última Markets',
-          'SniperXau Última Markets',
-          'SniperXau PRO Última Markets',
-          'HFTGOLD Moneta Markets'
+          'HFTGOLD ULTIMA',
+          'SNIPERXAU',
+          'SNIPERXAU PRO',
+          'SNIPER GOLD',
+          'SNIPER SHOW',
+          'SNIPER SHOW PRO',
+          'FAST BTC',
+          'HFTGOLD MONETA'
         ]);
       } catch (error) {
         console.error("Error loading AIs for proof:", error);
@@ -80,7 +84,7 @@ export function SocialProofSection({ isAdmin }: { isAdmin: boolean }) {
         return [proofData, ...prev];
       });
 
-      setNewProof({ iaName: availableIAs[0] || 'HFTGOLD Última Markets' });
+      setNewProof({ iaName: availableIAs[0] || 'HFTGOLD ULTIMA' });
     } catch (error) {
       console.error("Erro ao salvar feedback:", error);
       alert("Erro ao salvar. Verifique permissões.");
