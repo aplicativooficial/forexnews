@@ -8,6 +8,9 @@ import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import fs from "fs";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
+import OpenAI from "openai";
+import { randomUUID } from "node:crypto";
 
 // Load Firebase Config
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
@@ -237,6 +240,82 @@ async function startServer() {
     }
   });
 
+  // AI Service Factory
+  const getAIProvider = () => {
+    const provider = process.env.PREFERRED_AI_PROVIDER || 'gemini';
+    
+    if (provider === 'grok' && process.env.GROK_API_KEY) {
+      return new OpenAI({ apiKey: process.env.GROK_API_KEY, baseURL: 'https://api.x.ai/v1' });
+    }
+    
+    if (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
+      return new OpenAI({ apiKey: process.env.DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' });
+    }
+    
+    return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+  };
+
+  app.post("/api/ai-process", async (req, res) => {
+    const { prompt, type, stream = false } = req.body;
+    try {
+      const ai = getAIProvider();
+      
+      if (ai instanceof GoogleGenAI) {
+        const model = "gemini-2.0-flash-exp";
+
+        if (stream) {
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+          
+          const result = await ai.models.generateContentStream({
+            model,
+            contents: prompt
+          });
+          for await (const chunk of result) {
+            const text = chunk.text || "";
+            res.write(`data: ${JSON.stringify({ text })}\n\n`);
+          }
+          res.write('data: [DONE]\n\n');
+          return res.end();
+        } else {
+          const result = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: type === 'json' ? { responseMimeType: "application/json" } : {}
+          });
+          return res.json({ text: result.text || "" });
+        }
+      } else {
+        // OpenAI / Grok / DeepSeek
+        if (stream) {
+          res.setHeader('Content-Type', 'text/event-stream');
+          const completion = await ai.chat.completions.create({
+            model: process.env.PREFERRED_AI_PROVIDER === 'grok' ? "grok-beta" : "deepseek-chat",
+            messages: [{ role: 'user', content: prompt }],
+            stream: true,
+          });
+          for await (const chunk of completion) {
+            const text = chunk.choices[0]?.delta?.content || "";
+            res.write(`data: ${JSON.stringify({ text })}\n\n`);
+          }
+          res.write('data: [DONE]\n\n');
+          return res.end();
+        } else {
+          const completion = await ai.chat.completions.create({
+            model: process.env.PREFERRED_AI_PROVIDER === 'grok' ? "grok-beta" : "deepseek-chat",
+            messages: [{ role: 'user', content: prompt }],
+            response_format: type === 'json' ? { type: "json_object" } : { type: "text" }
+          });
+          return res.json({ text: completion.choices[0].message.content });
+        }
+      }
+    } catch (error) {
+      console.error("AI Proxy Error:", error);
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   app.post("/api/social-proofs", async (req, res) => {
     try {
       const proof = req.body;
@@ -439,6 +518,84 @@ app.get('/api/notification-status', async (req, res) => {
   }
 });
 
+async function syncSpreadsheet() {
+  if (!db) return;
+  console.log("Starting background spreadsheet sync...");
+  try {
+    const SPREADSHEET_URL = 'https://docs.google.com/spreadsheets/d/1hJDvBcirXgkd1RqwIRXFgkn0fIkm2rjSeAh28GxAnJM/gviz/tq?tqx=out:json&sheet=Resultados';
+    const response = await fetch(SPREADSHEET_URL);
+    const text = await response.text();
+    
+    // The response is wrapped in a google callback: google.visualization.Query.setResponse({...});
+    // Find the opening { and closing }
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start === -1 || end === -1) {
+      throw new Error('Invalid spreadsheet response format');
+    }
+    
+    const jsonStr = text.substring(start, end + 1);
+    const json = JSON.parse(jsonStr);
+    const rows = json.table.rows;
+
+    const snapshot = await db.collection('ai_results').get();
+    const existingResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+
+    for (const row of rows) {
+      const traderName = row.c[0]?.v || ''; // A: Trader
+      const sourceName = row.c[1]?.v || ''; // B: Fonte
+      const monthlyReturn = parseFloat(row.c[2]?.v) || 0; // C: Retorno Mensal
+      const winRate = parseFloat(row.c[3]?.v) || 0; // D: Win Rate
+      const trades = parseInt(row.c[4]?.v) || 0; // E: Trades
+      const statusStr = row.c[6]?.v || ''; // G: Status
+      const maxDrawdown = parseFloat(row.c[7]?.v) || 0; // H: Max Drawdown
+      const externalUrl = row.c[8]?.v || ''; // I: Link de Monitoramento
+
+      if (!traderName) continue;
+
+      const normalizedName = `${traderName} ${sourceName}`.trim();
+      const searchName = normalizedName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      const targetIA = existingResults.find(r => {
+         const dbName = `${r.name} ${r.source || ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+         return dbName.includes(searchName) || searchName.includes(dbName);
+      });
+
+      const aiData = {
+        id: targetIA?.id || randomUUID(),
+        name: traderName,
+        source: sourceName,
+        logo: targetIA?.logo || `https://api.dicebear.com/7.x/bottts/svg?seed=${searchName}&backgroundColor=D4AF37`,
+        currentMonthReturn: Number(monthlyReturn.toFixed(2)),
+        yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
+        winRate: Number(winRate.toFixed(2)),
+        totalTradesMonth: Number(trades),
+        maxDrawdown: Number(maxDrawdown),
+        equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
+        status: (statusStr.includes('✅') || statusStr.includes('Ativo')) ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
+        lastSync: new Date().toLocaleTimeString('pt-BR'),
+        isLive: true,
+        trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
+      };
+
+      await db.collection('ai_results').doc(aiData.id).set(aiData, { merge: true });
+    }
+    console.log("Background spreadsheet sync completed successfully.");
+  } catch (err) {
+    console.error("Background sync error:", err);
+  }
+}
+
+// Manual trigger endpoint
+app.post('/api/admin/sync-sheet', async (req, res) => {
+  try {
+    await syncSpreadsheet();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -453,8 +610,14 @@ if (process.env.NODE_ENV !== "production") {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // Initial sync on startup
+    await syncSpreadsheet();
+    
+    // Periodic sync every 20 minutes (1200000 ms)
+    setInterval(syncSpreadsheet, 1200000);
   });
 }
 

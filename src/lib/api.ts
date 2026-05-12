@@ -136,4 +136,12 @@ export const api = {
     });
     await handleResponse(res);
   },
+
+  processAi: async (prompt: string, type: 'text' | 'json' = 'text', stream = false) => {
+    return fetch(`${API_BASE}/ai-process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, type, stream })
+    });
+  },
 };

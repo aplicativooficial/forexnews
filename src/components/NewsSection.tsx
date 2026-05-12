@@ -3,10 +3,7 @@ import { Newspaper, Clock, ExternalLink, RefreshCw, X, Sparkles, ChevronRight, I
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { NewsItem } from '@/src/types';
-import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { api } from '@/src/lib/api';
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export function NewsSection() {
   const [news, setNews] = useState<NewsItem[]>([]);
@@ -52,7 +49,6 @@ export function NewsSection() {
   };
 
   const generateAiInsights = async (item: NewsItem, background = false) => {
-    // Check if this item is already being processed to avoid duplicate calls
     const newsItem = news.find(n => n.id === item.id);
     if (newsItem?.fullContent && newsItem?.summary) {
       if (!background) setSelectedNews(newsItem);
@@ -61,260 +57,134 @@ export function NewsSection() {
     
     if (!background) {
       setIsGenerating(true);
-      // Initialize with description to show something immediate
       setSelectedNews({ ...item, fullContent: item.description });
     }
 
     try {
-      // 1. Check Local API Cache first
       const cachedData = await api.getNewsCache(item.id);
-      
       if (cachedData) {
-        const updatedItem = {
-          ...item,
-          fullContent: cachedData.fullContent,
-          summary: cachedData.summary,
-          keyPoints: cachedData.keyPoints,
-          recommendation: cachedData.recommendation
-        };
+        const updatedItem = { ...item, ...cachedData };
         setNews(prev => prev.map(n => n.id === item.id ? updatedItem : n));
         if (!background) setSelectedNews(updatedItem);
+        setIsGenerating(false);
         return updatedItem;
       }
 
-      // Helper to handle retry logic for Rate Limits (429)
-      const callWithRetry = async (fn: () => Promise<any>, retries = 2, delay = 3000): Promise<any> => {
-        try {
-          return await fn();
-        } catch (error: any) {
-          if (error?.message?.includes('429') && retries > 0) {
-            console.log(`Rate limit hit, retrying in ${delay}ms...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return callWithRetry(fn, retries - 1, delay * 2);
-          }
-          throw error;
-        }
-      };
-
-      // 2. Background processing (JSON only)
       if (background) {
         const prompt = `Analista Forex Sênior: Traduza para PT-BR e Analise.
         Notícia: ${item.title} | ${item.description}
+        Retorne JSON: { "fullContent": "tradução detalhada", "summary": "resumo", "keyPoints": [], "recommendation": "" }`;
+
+        const response = await api.processAi(prompt, 'json');
+        const json = await response.json();
+        const data = JSON.parse(json.text || '{}');
         
-        Retorne JSON:
-        {
-          "fullContent": "Tradução detalhada do conteúdo e análise de mercado (3-4 parágrafos pequenos)",
-          "summary": "Resumo executivo de 1 frase",
-          "keyPoints": ["Ponto chave 1", "Ponto chave 2", "Ponto chave 3"],
-          "recommendation": "Par e direção recomendada"
-        }`;
-
-        const response = await callWithRetry(() => ai.models.generateContent({
-          model: "gemini-flash-latest",
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            temperature: 0.1,
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                fullContent: { type: Type.STRING },
-                summary: { type: Type.STRING },
-                keyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
-                recommendation: { type: Type.STRING }
-              },
-              required: ["fullContent", "summary", "keyPoints", "recommendation"]
-            }
-          }
-        }));
-
-        const data = JSON.parse(response.text || '{}');
-        const updatedItem = {
-          ...item,
-          fullContent: data.fullContent,
-          summary: data.summary,
-          keyPoints: data.keyPoints,
-          recommendation: data.recommendation
-        };
-
-        await api.saveNewsCache({
-          id: item.id,
-          fullContent: data.fullContent,
-          summary: data.summary,
-          keyPoints: data.keyPoints,
-          recommendation: data.recommendation
-        });
-
-        setNews(prev => prev.map(n => n.id === item.id ? updatedItem : n));
-        return updatedItem;
+        const finalItem = { ...item, ...data };
+        await api.saveNewsCache({ id: item.id, ...data });
+        setNews(prev => prev.map(n => n.id === item.id ? finalItem : n));
+        return finalItem;
       }
 
-      // 3. Foreground Streaming (Instant per-word display)
-      let streamContent = "";
-      const streamPrompt = `Atue como analista Forex sênior. Traduza e expanda esta notícia para Português do Brasil com análise técnica. 
-      Seja detalhado mas direto (3-4 parágrafos).
+      // Foreground: Use stream for instant feedback
+      const streamPrompt = `Atue como analista Forex sênior. Traduza e analise esta notícia para PT-BR.
+      Seja detalhado mas direto (3-4 parágrafos pequenos).
       Notícia: ${item.title} | ${item.description}`;
 
-      const streamResponse = await ai.models.generateContentStream({
-        model: "gemini-flash-latest",
-        contents: streamPrompt,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          temperature: 0.2
-        }
-      });
+      const response = await api.processAi(streamPrompt, 'text', true);
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = "";
 
-      // While streaming content, start fetching metadata in parallel
+      // Parallel metadata fetch
       const metaPromise = (async () => {
         const metaPrompt = `Gere resumo curto, 3 pontos chave e recomendação para: ${item.title}. 
-        Retorne JSON { "summary", "keyPoints": [], "recommendation" }.`;
-        
-        const response = await callWithRetry(() => ai.models.generateContent({
-          model: "gemini-flash-latest",
-          contents: metaPrompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                summary: { type: Type.STRING },
-                keyPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
-                recommendation: { type: Type.STRING }
-              },
-              required: ["summary", "keyPoints", "recommendation"]
-            }
-          }
-        }));
-        return JSON.parse(response.text || '{}');
+        Retorne JSON { "summary": "...", "keyPoints": [], "recommendation": "..." }.`;
+        const res = await api.processAi(metaPrompt, 'json');
+        const resJson = await res.json();
+        return JSON.parse(resJson.text || '{}');
       })();
 
-      for await (const chunk of streamResponse) {
-        streamContent += chunk.text;
-        setSelectedNews(prev => prev && prev.id === item.id ? { ...prev, fullContent: streamContent } : prev);
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.replace('data: ', '');
+              if (dataStr === '[DONE]') break;
+              try {
+                const data = JSON.parse(dataStr);
+                fullContent += data.text;
+                setSelectedNews(prev => prev && prev.id === item.id ? { ...prev, fullContent } : prev);
+              } catch (e) {}
+            }
+          }
+        }
       }
 
-      const metaData = await metaPromise;
-      const finalItem = {
-        ...item,
-        fullContent: streamContent,
-        summary: metaData.summary,
-        keyPoints: metaData.keyPoints,
-        recommendation: metaData.recommendation
-      };
-
-      // Save and sync
-      await api.saveNewsCache({
-        id: item.id,
-        fullContent: finalItem.fullContent,
-        summary: finalItem.summary,
-        keyPoints: finalItem.keyPoints,
-        recommendation: finalItem.recommendation
-      });
-
+      const meta = await metaPromise;
+      const finalItem = { ...item, fullContent, ...meta };
+      await api.saveNewsCache({ id: item.id, fullContent, ...meta });
       setNews(prev => prev.map(n => n.id === item.id ? finalItem : n));
       setSelectedNews(finalItem);
+      setIsGenerating(false);
       return finalItem;
     } catch (error) {
-      console.error("AI Insights error:", error);
+      console.error("AI Insight error:", error);
+      setIsGenerating(false);
       return item;
-    } finally {
-      if (!background) setIsGenerating(false);
     }
   };
 
   const translateNews = async (items: NewsItem[]) => {
-    try {
-      const cacheKey = 'forex_news_translations';
-      const cacheStr = localStorage.getItem(cacheKey);
-      const cache = cacheStr ? JSON.parse(cacheStr) : {};
-      
-      const toTranslate = items.filter(item => !cache[item.id]);
-      
-      if (toTranslate.length === 0) {
-        return items.map(item => ({
-          ...item,
-          title: cache[item.id]?.title || item.title,
-          description: cache[item.id]?.description || item.description
-        }));
-      }
+    const cacheKey = 'forex_news_translations';
+    const cache = JSON.parse(localStorage.getItem(cacheKey) || '{}');
+    const toTranslate = items.filter(item => !cache[item.id]);
 
-      // Translate in smaller batches and update state incrementally
-      const BATCH_SIZE = 4;
-      for (let i = 0; i < toTranslate.length; i += BATCH_SIZE) {
-        // Add a small delay between batches to avoid immediate rate limits
-        if (i > 0) await new Promise(resolve => setTimeout(resolve, 1500));
+    if (toTranslate.length === 0) {
+      return items.map(item => ({
+        ...item,
+        title: cache[item.id]?.title || item.title,
+        description: cache[item.id]?.description || item.description
+      }));
+    }
 
-        const batch = toTranslate.slice(i, i + BATCH_SIZE);
-        const prompt = `Traduza para PT-BR (Forex Técnico). Retorne JSON { "translations": [{ "id", "title", "description" }] }.
-        Notícias:
-        ${batch.map(item => `ID: ${item.id}\nTitle: ${item.title}\nDescription: ${item.description}`).join('\n\n')}`;
+    // Translate in batches using our backend AI proxy
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < toTranslate.length; i += BATCH_SIZE) {
+      const batch = toTranslate.slice(i, i + BATCH_SIZE);
+      const prompt = `Translate to PT-BR (Forex Technical). Return JSON only.
+      Format: { "translations": [{ "id": "...", "title": "...", "description": "..." }] }
+      News:
+      ${batch.map(item => `ID: ${item.id}\nTitle: ${item.title}\nDescription: ${item.description}`).join('\n\n')}`;
 
-        const response = await ai.models.generateContent({
-          model: "gemini-flash-latest",
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            temperature: 0.1,
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                translations: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      title: { type: Type.STRING },
-                      description: { type: Type.STRING }
-                    },
-                    required: ["id", "title", "description"]
-                  }
-                }
-              }
-            }
-          }
-        });
-
-        const json = JSON.parse(response.text || '{}');
-        const translatedData = json.translations || [];
+      try {
+        const response = await api.processAi(prompt, 'json');
+        const json = await response.json();
+        const data = JSON.parse(json.text || '{}');
+        const translatedData = data.translations || [];
         
         translatedData.forEach((t: any) => {
           cache[t.id] = { title: t.title, description: t.description };
         });
         localStorage.setItem(cacheKey, JSON.stringify(cache));
         
-        // Update state with newly translated items
+        // Update state incrementally
         setNews(prev => prev.map(item => {
           const trans = cache[item.id];
-          if (trans) {
-            return {
-              ...item,
-              title: trans.title,
-              description: trans.description
-            };
-          }
-          return item;
+          return trans ? { ...item, ...trans } : item;
         }));
+      } catch (err) {
+        console.error("Translation batch failed:", err);
       }
-      
-      return items.map(item => {
-        const translation = cache[item.id];
-        if (translation) {
-          return {
-            ...item,
-            title: translation.title,
-            description: translation.description
-          };
-        }
-        return item;
-      });
-    } catch (error) {
-      console.error("Translation error:", error);
-      return items;
     }
+    
+    return items.map(item => {
+      const translation = cache[item.id];
+      return translation ? { ...item, ...translation } : item;
+    });
   };
 
   const fetchNews = async () => {

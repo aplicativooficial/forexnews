@@ -92,67 +92,21 @@ export function AIResultsSection({ isAdmin }: { isAdmin: boolean }) {
   const handleSpreadsheetSync = async () => {
     setIsSyncing(true);
     try {
-      const SPREADSHEET_URL = 'https://docs.google.com/spreadsheets/d/1hJDvBcirXgkd1RqwIRXFgkn0fIkm2rjSeAh28GxAnJM/gviz/tq?tqx=out:json&sheet=Resultados';
-      const response = await fetch(SPREADSHEET_URL);
-      const text = await response.text();
-      // Strip the google.visualization.Query.setResponse wrapper
-      const json = JSON.parse(text.substring(47, text.length - 2));
-      const rows = json.table.rows;
-
-      for (const row of rows) {
-        const traderName = row.c[0]?.v || ''; // A: Trader
-        const sourceName = row.c[1]?.v || ''; // B: Fonte
-        const monthlyReturn = row.c[2]?.v || 0; // C: Retorno Mensal
-        const winRate = row.c[3]?.v || 0; // D: Win Rate
-        const trades = row.c[4]?.v || 0; // E: Trades
-        const statusStr = row.c[6]?.v || ''; // G: Status
-        const maxDrawdown = row.c[7]?.v || 0; // H: Max Drawdown
-        const externalUrl = row.c[8]?.v || ''; // I: Link de Monitoramento
-
-        // Construct unique ID-like identifier for matching
-        const normalizedName = `${traderName} ${sourceName}`.trim();
-        const searchName = normalizedName.toLowerCase().replace(/[^a-z0-9]/g, '');
-        
-        const targetIA = results.find(r => {
-           const dbName = `${r.name} ${r.source || ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-           return dbName.includes(searchName) || searchName.includes(dbName);
-        });
-
-        const aiData: AIResult = {
-          id: targetIA?.id || crypto.randomUUID(),
-          name: traderName,
-          source: sourceName,
-          logo: targetIA?.logo || `https://api.dicebear.com/7.x/bottts/svg?seed=${searchName}&backgroundColor=D4AF37`,
-          currentMonthReturn: Number(monthlyReturn.toFixed(2)),
-          yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
-          winRate: Number(winRate.toFixed(2)),
-          totalTradesMonth: Number(trades),
-          maxDrawdown: Number(maxDrawdown),
-          equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
-          status: (statusStr.includes('✅') || statusStr.includes('Ativo')) ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
-          lastSync: new Date().toLocaleTimeString('pt-BR'),
-          isLive: true,
-          trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
-        };
-
-        await api.saveAIResult(aiData);
-      }
-      alert("Sincronização Avançada com Planilha concluída!");
+      const response = await fetch('/api/admin/sync-sheet', { method: 'POST' });
+      if (!response.ok) throw new Error('Sync failed');
+      
+      // Refresh local data after backend sync
+      const data = await api.getAIResults();
+      setResults(data.sort((a, b) => a.name.localeCompare(b.name)));
+      
+      alert("Sincronização Avançada com Planilha concluída via Servidor!");
     } catch (error) {
       console.error("Spreadsheet sync error:", error);
-      alert("Erro ao sincronizar. Verifique se o formato da planilha mudou.");
+      alert("Erro ao sincronizar. Verifique se o servidor está online.");
     } finally {
       setIsSyncing(false);
     }
   };
-
-  useEffect(() => {
-    // Auto-sync for admin every 10 minutes if the page is open
-    if (isAdmin && results.length > 0) {
-      const interval = setInterval(handleSpreadsheetSync, 600000);
-      return () => clearInterval(interval);
-    }
-  }, [isAdmin, results.length]);
 
   const handleOpenEdit = (ai: AIResult) => {
     setEditingId(ai.id);
