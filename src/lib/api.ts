@@ -91,24 +91,6 @@ export const api = {
     await handleResponse(res);
   },
 
-  // Banners
-  getBanners: async () => {
-    const res = await fetch(`${API_BASE}/banners`);
-    return handleResponse(res);
-  },
-  saveBanner: async (banner: any) => {
-    const res = await fetch(`${API_BASE}/banners`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(banner)
-    });
-    await handleResponse(res);
-  },
-  deleteBanner: async (id: string) => {
-    const res = await fetch(`${API_BASE}/banners/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    await handleResponse(res);
-  },
-
   // Config
   getConfig: async (id: string) => {
     const res = await fetch(`${API_BASE}/config/${encodeURIComponent(id)}`);

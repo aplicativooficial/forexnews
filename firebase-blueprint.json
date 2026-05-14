@@ -50,21 +50,6 @@
       },
       "required": ["name", "logo", "currentMonthReturn", "yearCumulativeReturn", "status"]
     },
-    "BrokerBanner": {
-      "title": "Broker Banner",
-      "description": "Advertisement banner for brokers and bonuses.",
-      "type": "object",
-      "properties": {
-        "brokerName": { "type": "string" },
-        "offer": { "type": "string" },
-        "badge": { "type": "string" },
-        "imageUrl": { "type": "string" },
-        "ctaUrl": { "type": "string" },
-        "order": { "type": "number" },
-        "createdAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["brokerName", "offer", "imageUrl", "ctaUrl"]
-    },
     "SystemConfig": {
       "title": "System Configuration",
       "description": "Global application settings and dynamic text.",
@@ -109,10 +94,6 @@
     "/ai_results/{resultId}": {
       "schema": "AIResult",
       "description": "Collection of AI performance data."
-    },
-    "/banners/{bannerId}": {
-      "schema": "BrokerBanner",
-      "description": "Collection of promotional banners."
     },
     "/config/{configId}": {
       "schema": "SystemConfig",

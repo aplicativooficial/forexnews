@@ -252,16 +252,32 @@ async function startServer() {
       return new OpenAI({ apiKey: process.env.DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' });
     }
     
-    return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+    return new GoogleGenAI({ 
+      apiKey: (process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").trim(),
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   };
 
   app.post("/api/ai-process", async (req, res) => {
     const { prompt, type, stream = false } = req.body;
+    
+    const apiKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").trim();
+    if (!apiKey) {
+      return res.status(400).json({ 
+        error: "GEMINI_API_KEY não configurada. Por favor, adicione sua chave em Settings > Secrets.",
+        details: "A variável de ambiente GEMINI_API_KEY está ausente ou vazia."
+      });
+    }
+
     try {
       const ai = getAIProvider();
       
       if (ai instanceof GoogleGenAI) {
-        const model = "gemini-2.0-flash-exp";
+        const model = "gemini-3-flash-preview";
 
         if (stream) {
           res.setHeader('Content-Type', 'text/event-stream');
@@ -312,7 +328,14 @@ async function startServer() {
       }
     } catch (error) {
       console.error("AI Proxy Error:", error);
-      res.status(500).json({ error: String(error) });
+      const errorMsg = String(error);
+      if (errorMsg.includes("API key not valid") || errorMsg.includes("400") || errorMsg.includes("403")) {
+        return res.status(error?.status || 400).json({ 
+          error: "API Key inválida. Por favor, verifique sua chave Gemini no painel de Configurações > Secrets do AI Studio.",
+          details: errorMsg
+        });
+      }
+      res.status(500).json({ error: errorMsg });
     }
   });
 
@@ -337,38 +360,7 @@ async function startServer() {
   });
 
   // Vite middleware for development
-  // Banners
-  app.get('/api/banners', async (req, res) => {
-    try {
-      const snapshot = await db.collection('banners').orderBy('createdAt', 'desc').get();
-      const banners = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      res.json(banners);
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  app.post('/api/banners', async (req, res) => {
-    try {
-      const banner = req.body;
-      if (!banner.createdAt) banner.createdAt = new Date().toISOString();
-      await db.collection('banners').doc(banner.id).set(banner);
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  app.delete('/api/banners/:id', async (req, res) => {
-    try {
-      await db.collection('banners').doc(req.params.id).delete();
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-// Config
+  // Config
 app.get('/api/config/:id', async (req, res) => {
   try {
     const doc = await db.collection('config').doc(req.params.id).get();
@@ -670,8 +662,8 @@ if (process.env.NODE_ENV !== "production") {
     // Initial sync on startup
     await syncSpreadsheet();
     
-    // Periodic sync every 20 minutes (1200000 ms)
-    setInterval(syncSpreadsheet, 1200000);
+    // Periodic sync every 5 minutes (300,000 ms)
+    setInterval(syncSpreadsheet, 300000);
   });
 }
 
