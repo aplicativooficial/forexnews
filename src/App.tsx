@@ -33,7 +33,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/src/lib/utils';
 import { 
   NewsItem, 
-  SocialProof, 
   BrokerBanner, 
   AIResult, 
   DailyAnalysis 
@@ -46,7 +45,6 @@ import { handleResponse } from './lib/api';
 // Section Components
 import { NewsSection } from './components/NewsSection';
 import { XauUsdSection } from './components/XauUsdSection';
-import { SocialProofSection } from './components/SocialProofSection';
 import { AIResultsSection } from './components/AIResultsSection';
 import { RankingSection } from './components/RankingSection';
 import { CommunitySection } from './components/CommunitySection';
@@ -267,7 +265,6 @@ export default function App() {
     { id: 'news', label: 'Notícias', icon: Newspaper },
     { id: 'community', label: 'Comunidade', icon: Bell },
     { id: 'xauusd', label: 'XAU/USD Panel', icon: Coins },
-    { id: 'social', label: 'Feedback dos Alunos', icon: Users },
     { id: 'ai-results', label: 'Performance IA', icon: Bot },
     { id: 'ranking', label: 'Ranking Global', icon: Trophy },
     { id: 'install', label: 'Instalar App', icon: Smartphone },
@@ -651,7 +648,6 @@ function SectionRouter({ section, isAdmin }: { section: string, isAdmin: boolean
     case 'news': return <NewsSection />;
     case 'community': return <CommunitySection isAdmin={isAdmin} />;
     case 'xauusd': return <XauUsdSection isAdmin={isAdmin} />;
-    case 'social': return <SocialProofSection isAdmin={isAdmin} />;
     case 'ai-results': return <AIResultsSection isAdmin={isAdmin} />;
     case 'ranking': return <RankingSection />;
     case 'install': return <InstallGuideSection />;

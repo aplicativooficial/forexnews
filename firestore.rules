@@ -47,21 +47,6 @@ service cloud.firestore {
       }
     }
 
-    // Social Proof
-    match /social_proof/{proofId} {
-      allow read: if true;
-      allow create: if isAdmin() && isValidSocialProof(incoming());
-      allow update: if isAdmin() && isValidSocialProof(incoming());
-      allow delete: if isAdmin();
-      
-      function isValidSocialProof(data) {
-        return data.keys().hasAll(['memberName', 'result', 'testimonial', 'iaName', 'date', 'imageUrl']) &&
-               data.memberName is string && data.memberName.size() <= 100 &&
-               data.testimonial is string && data.testimonial.size() <= 1000 &&
-               data.result is string && data.result.size() <= 100;
-      }
-    }
-
     // AI Results
     match /ai_results/{resultId} {
       allow read: if true;

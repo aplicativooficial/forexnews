@@ -15,21 +15,6 @@
       },
       "required": ["title", "content", "date", "type"]
     },
-    "SocialProof": {
-      "title": "Social Proof",
-      "description": "Testimonials and results from members.",
-      "type": "object",
-      "properties": {
-        "memberName": { "type": "string" },
-        "avatar": { "type": "string" },
-        "result": { "type": "string" },
-        "testimonial": { "type": "string" },
-        "iaName": { "type": "string" },
-        "date": { "type": "string" },
-        "imageUrl": { "type": "string" }
-      },
-      "required": ["memberName", "result", "testimonial", "iaName", "date", "imageUrl"]
-    },
     "AIResult": {
       "title": "AI Performance Result",
       "description": "Performance metrics for different AI strategies.",
@@ -86,10 +71,6 @@
     "/updates/{updateId}": {
       "schema": "CommunityUpdate",
       "description": "Collection of community news and updates."
-    },
-    "/social_proof/{proofId}": {
-      "schema": "SocialProof",
-      "description": "Collection of member testimonials and results."
     },
     "/ai_results/{resultId}": {
       "schema": "AIResult",

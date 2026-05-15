@@ -25,18 +25,6 @@ export interface CommunityUpdate {
   externalLinkText?: string;
 }
 
-export interface SocialProof {
-  id: string;
-  memberName: string;
-  avatar?: string;
-  result: string;
-  testimonial: string;
-  iaName: string;
-  iaId?: string; // Reference to AI ID for synchronization
-  date: string;
-  imageUrl: string;
-}
-
 export interface BrokerBanner {
   id: string;
   brokerName: string;

@@ -1,4 +1,4 @@
-import { AIResult, CommunityUpdate, DailyAnalysis, SocialProof } from "../types";
+import { AIResult, CommunityUpdate, DailyAnalysis } from "../types";
 
 const API_BASE = "/api";
 export const API_ROOT = API_BASE;
@@ -70,24 +70,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(analysis),
     });
-    await handleResponse(res);
-  },
-
-  // Social Proofs
-  getSocialProofs: async (): Promise<SocialProof[]> => {
-    const res = await fetch(`${API_BASE}/social-proofs`);
-    return handleResponse(res);
-  },
-  saveSocialProof: async (proof: SocialProof): Promise<void> => {
-    const res = await fetch(`${API_BASE}/social-proofs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(proof),
-    });
-    await handleResponse(res);
-  },
-  deleteSocialProof: async (id: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/social-proofs/${encodeURIComponent(id)}`, { method: "DELETE" });
     await handleResponse(res);
   },
 

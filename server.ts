@@ -78,12 +78,6 @@ async function migrateIfNeeded() {
       });
     }
 
-    // Migration: Social Proofs
-    const proofs = sqliteDb.prepare("SELECT * FROM social_proofs").all();
-    for (const p of proofs as any[]) {
-      await db.collection('social_proof').doc(p.id).set(p);
-    }
-
     // Migration: Banners
     const banners = sqliteDb.prepare("SELECT * FROM banners").all();
     for (const b of banners as any[]) {
@@ -229,18 +223,7 @@ async function startServer() {
     }
   });
 
-  // Social Proofs
-  app.get("/api/social-proofs", async (req, res) => {
-    try {
-      const snapshot = await db.collection('social_proof').orderBy('createdAt', 'desc').get();
-      const proofs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      res.json(proofs);
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  // AI Service Factory
+    // AI Service Factory
   const sanitizeApiKey = (key: string) => {
     if (!key) return "";
     return key.trim().replace(/^["']|["']$/g, '');
@@ -349,26 +332,6 @@ async function startServer() {
         });
       }
       res.status(500).json({ error: errorMsg });
-    }
-  });
-
-  app.post("/api/social-proofs", async (req, res) => {
-    try {
-      const proof = req.body;
-      if (!proof.createdAt) proof.createdAt = new Date().toISOString();
-      await db.collection('social_proof').doc(proof.id).set(proof);
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  app.delete("/api/social-proofs/:id", async (req, res) => {
-    try {
-      await db.collection('social_proof').doc(req.params.id).delete();
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
     }
   });
 
