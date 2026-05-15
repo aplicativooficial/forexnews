@@ -241,19 +241,24 @@ async function startServer() {
   });
 
   // AI Service Factory
+  const sanitizeApiKey = (key: string) => {
+    if (!key) return "";
+    return key.trim().replace(/^["']|["']$/g, '');
+  };
+
   const getAIProvider = () => {
     const provider = process.env.PREFERRED_AI_PROVIDER || 'gemini';
     
     if (provider === 'grok' && process.env.GROK_API_KEY) {
-      return new OpenAI({ apiKey: process.env.GROK_API_KEY, baseURL: 'https://api.x.ai/v1' });
+      return new OpenAI({ apiKey: sanitizeApiKey(process.env.GROK_API_KEY), baseURL: 'https://api.x.ai/v1' });
     }
     
     if (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
-      return new OpenAI({ apiKey: process.env.DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' });
+      return new OpenAI({ apiKey: sanitizeApiKey(process.env.DEEPSEEK_API_KEY), baseURL: 'https://api.deepseek.com' });
     }
     
     return new GoogleGenAI({ 
-      apiKey: (process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").trim(),
+      apiKey: sanitizeApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || ""),
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
@@ -265,19 +270,27 @@ async function startServer() {
   app.post("/api/ai-process", async (req, res) => {
     const { prompt, type, stream = false } = req.body;
     
-    const apiKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").trim();
+    const apiKey = sanitizeApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "");
     if (!apiKey) {
+      console.error("AI Error: GEMINI_API_KEY is missing or empty.");
       return res.status(400).json({ 
         error: "GEMINI_API_KEY não configurada. Por favor, adicione sua chave em Settings > Secrets.",
         details: "A variável de ambiente GEMINI_API_KEY está ausente ou vazia."
       });
     }
 
+    // Masked logging for debugging
+    const maskedKey = apiKey.length > 8 
+      ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` 
+      : "****";
+    console.log(`Using AI Provider: ${process.env.PREFERRED_AI_PROVIDER || 'gemini'} (Key length: ${apiKey.length}, Masked: ${maskedKey})`);
+
     try {
       const ai = getAIProvider();
       
       if (ai instanceof GoogleGenAI) {
-        const model = "gemini-3-flash-preview";
+        // use latest model
+        const model = "gemini-1.5-flash"; // More widely available than 3-flash-preview for some keys
 
         if (stream) {
           res.setHeader('Content-Type', 'text/event-stream');
@@ -537,10 +550,12 @@ async function updateAIResultsFromData(data: any[]) {
        return dbName.includes(searchName) || searchName.includes(dbName);
     });
 
+    console.log(`[Sync] ${traderName} (${sourceName}): Daily=${dailyReturn}%, Monthly=${monthlyReturn}%, Drawdown=${maxDrawdown}%`);
+
     let logoUrl = targetIA?.logo;
-    if (!logoUrl) {
+    if (!logoUrl || logoUrl.includes('pixabay') || logoUrl.includes('bug')) {
       if (searchName.includes('btc')) {
-         logoUrl = 'https://cdn.pixabay.com/photo/2017/01/25/12/31/bitcoin-2007769_1280.png';
+         logoUrl = 'https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/svg/color/btc.svg';
       } else if (searchName.includes('sniper')) {
          logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=sniper&backgroundColor=D4AF37`;
       } else if (searchName.includes('hft')) {
@@ -588,7 +603,12 @@ async function syncSpreadsheet() {
     const json = JSON.parse(text.substring(start, end + 1));
     const rows = json.table.rows;
 
-    const parseVal = (v: any) => {
+    const parseVal = (v: any, f?: any) => {
+      if (typeof f === 'string' && f.includes('%')) {
+        // If it's a formatted percentage, the numerical value is usually a fraction (e.g. 0.0017 for 0.17%)
+        const parsed = parseFloat(f.replace(',', '.').replace('%', ''));
+        if (!isNaN(parsed)) return parsed;
+      }
       if (typeof v === 'number') return v;
       if (typeof v === 'string') return parseFloat(v.replace(',', '.').replace('%', ''));
       return 0;
@@ -597,12 +617,12 @@ async function syncSpreadsheet() {
     const dataToSync = rows.map((row: any) => ({
       trader: row.c[0]?.v || '',
       source: row.c[1]?.v || '',
-      daily: parseVal(row.c[2]?.v),
-      weekly: parseVal(row.c[3]?.v),
-      monthly: parseVal(row.c[4]?.v),
-      lastUpdate: row.c[5]?.v || '',
+      daily: parseVal(row.c[2]?.v, row.c[2]?.f),
+      weekly: parseVal(row.c[3]?.v, row.c[3]?.f),
+      monthly: parseVal(row.c[4]?.v, row.c[4]?.f),
+      lastUpdate: row.c[5]?.f || row.c[5]?.v || '', // Use formatted date if possible
       status: row.c[6]?.v || '',
-      drawdown: parseVal(row.c[7]?.v),
+      drawdown: parseVal(row.c[7]?.v, row.c[7]?.f),
       url: row.c[8]?.v || ''
     }));
 
@@ -662,8 +682,8 @@ if (process.env.NODE_ENV !== "production") {
     // Initial sync on startup
     await syncSpreadsheet();
     
-    // Periodic sync every 5 minutes (300,000 ms)
-    setInterval(syncSpreadsheet, 300000);
+    // Periodic sync every 2 minutes for testing (120,000 ms)
+    setInterval(syncSpreadsheet, 120000);
   });
 }
 
