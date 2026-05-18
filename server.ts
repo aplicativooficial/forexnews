@@ -38,11 +38,21 @@ async function initFirebase() {
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         console.log(`[Firebase] Initializing from environment variable...`);
       } catch (e) {
-        console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var");
+        console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var. Trying file fallback...");
       }
-    } else if (fs.existsSync(serviceAccountPath)) {
-      console.log(`[Firebase] Initializing with service account file...`);
-      serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+    }
+    
+    if (!serviceAccount && fs.existsSync(serviceAccountPath)) {
+      try {
+        console.log(`[Firebase] Service account file found at ${serviceAccountPath}. Reading...`);
+        const content = fs.readFileSync(serviceAccountPath, 'utf8');
+        serviceAccount = JSON.parse(content);
+        console.log(`[Firebase] Initializing with service account from file (Project ID: ${serviceAccount.project_id})...`);
+      } catch (e) {
+        console.error("[Firebase] Error parsing service account file:", e);
+      }
+    } else if (!serviceAccount) {
+      console.warn(`[Firebase] No service account found at ${serviceAccountPath} and no valid env var.`);
     }
 
     let app;
@@ -695,7 +705,7 @@ async function startServer() {
     try {
       const ai: any = getAIProvider();
       
-      if (ai instanceof GoogleGenAI || (ai && typeof ai.models !== 'undefined')) {
+      if (ai && typeof ai.models !== 'undefined') {
         // Use gemini-3-flash-preview as recommended by skill
         let modelName = "gemini-3-flash-preview";
         
