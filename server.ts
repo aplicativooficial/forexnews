@@ -35,16 +35,25 @@ async function initFirebase() {
 
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
       try {
-        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        let rawJson = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+        // Remove surrounding quotes if any (common in some env editors)
+        if (rawJson.startsWith("'") && rawJson.endsWith("'")) rawJson = rawJson.slice(1, -1);
+        if (rawJson.startsWith('"') && rawJson.endsWith('"')) rawJson = rawJson.slice(1, -1);
+        // Handle escaped double quotes
+        if (rawJson.includes('\\"')) rawJson = rawJson.replace(/\\"/g, '"');
+        
+        serviceAccount = JSON.parse(rawJson);
         
         // Fix for private_key formatting issues common in some environments
         if (serviceAccount && serviceAccount.private_key) {
           serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         }
         
-        console.log(`[Firebase] Initializing from environment variable...`);
-      } catch (e) {
-        console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var. Trying file fallback...");
+        console.log(`[Firebase] Initializing from environment variable (Project: ${serviceAccount.project_id})...`);
+      } catch (e: any) {
+        console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var:", e.message);
+        console.log("[Firebase] Raw env var length:", process.env.FIREBASE_SERVICE_ACCOUNT.length);
+        console.log("[Firebase] Trying file fallback...");
       }
     }
     
@@ -119,7 +128,13 @@ async function initFirebase() {
       // Log full error details but DO NOT disable by default unless we know it's unrecoverable
       // The 503 errors reported by the user are caused by setting db/messaging to null here.
       if (err.message.includes('UNAUTHENTICATED')) {
-         console.error("[Firebase] Credential Warning: UNAUTHENTICATED. This usually means the service account key is invalid or lacks roles.");
+         console.error("[Firebase] Credential Warning: UNAUTHENTICATED. Status Code:", err.code);
+         console.error("[Firebase] Full error details:", JSON.stringify(err));
+         console.error("[Firebase] Project ID in Config:", firebaseConfig.projectId);
+         if (serviceAccount) {
+           console.error("[Firebase] Project ID in Service Account:", serviceAccount.project_id);
+           console.error("[Firebase] Client Email:", serviceAccount.client_email);
+         }
       }
     });
   } catch (error) {
@@ -146,8 +161,11 @@ async function migrateIfNeeded() {
             equityData: JSON.parse(r.equityData || '[]'),
             isLive: Boolean(r.isLive)
           }, { merge: true });
-        } catch (innerErr) {
-          // Silent skip
+        } catch (innerErr: any) {
+          if (innerErr.message.includes('UNAUTHENTICATED')) {
+            console.error("[Migration] Firestore write failed due to authentication. Stopping migration.");
+            return;
+          }
         }
       }
     } catch (e) {}
@@ -713,6 +731,14 @@ async function startServer() {
       const response = await messaging.sendEachForMulticast(message);
       console.log(`[FCM] Send result: ${response.successCount} successes, ${response.failureCount} failures.`);
       
+      if (response.failureCount > 0) {
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            console.warn(`[FCM] Token[${idx}] failed:`, resp.error?.code, resp.error?.message);
+          }
+        });
+      }
+      
       res.json({ 
         success: true, 
         count: response.successCount, 
@@ -727,7 +753,7 @@ async function startServer() {
   app.get('/api/notification-status', async (req, res) => {
     try {
       const row = sqliteDb.prepare("SELECT count(*) as count FROM fcm_tokens").get();
-      res.json({ tokenCount: row.count });
+      res.json({ tokenCount: row ? row.count : 0 });
     } catch (error) {
       res.json({ tokenCount: 0 });
     }
@@ -798,13 +824,15 @@ async function startServer() {
           try {
             // Support both @google/genai (new) and @google/generative-ai (legacy)
             if (typeof ai.models !== 'undefined') {
+              // Ensure we use the correct model format for the new SDK
+              const fullModelName = model.startsWith('models/') ? model : `models/${model}`;
               if (stream) {
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
                 res.setHeader('Connection', 'keep-alive');
                 
                 const result = await ai.models.generateContentStream({
-                  model,
+                  model: fullModelName,
                   contents: prompt
                 });
                 for await (const chunk of result) {
@@ -815,7 +843,7 @@ async function startServer() {
                 return res.end();
               } else {
                 const result = await ai.models.generateContent({
-                  model,
+                  model: fullModelName,
                   contents: prompt,
                   config: type === 'json' ? { responseMimeType: "application/json" } : {}
                 });
@@ -855,8 +883,12 @@ async function startServer() {
         } catch (e: any) {
           console.warn(`[AI Process] Model ${modelName} failed, trying fallback:`, e.message);
           if (e.message.includes('not found') || e.message.includes('404')) {
-            // Try with latest alias as fallback
-            return await runAI("gemini-flash-latest");
+            // Try with flash 1.0 or flash-8b
+            try {
+              return await runAI("gemini-1.5-flash-8b");
+            } catch (innerE) {
+              return await runAI("gemini-1.0-pro");
+            }
           }
           throw e;
         }
