@@ -133,66 +133,95 @@ async function startServer() {
 
   // Initialize SQLite for persistence fallback
   const sqlitePath = path.join(process.cwd(), 'database.sqlite');
-  sqliteDb = new Database(sqlitePath);
+  try {
+    sqliteDb = new Database(sqlitePath);
+  } catch (err: any) {
+    console.error("[SQLite] Failed to open database:", err.message);
+    if (err.message.includes('malformed') || err.message.includes('corrupt')) {
+      console.warn("[SQLite] Database is corrupt. Deleting and starting fresh...");
+      try {
+        fs.unlinkSync(sqlitePath);
+        sqliteDb = new Database(sqlitePath);
+      } catch (e: any) {
+        console.error("[SQLite] Hard failure, using in-memory DB:", e.message);
+        sqliteDb = new Database(':memory:');
+      }
+    } else {
+      throw err;
+    }
+  }
+
   // Create tables if they don't exist
-  sqliteDb.exec(`
-    CREATE TABLE IF NOT EXISTS community_updates (
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      description TEXT,
-      date TEXT,
-      isImportant INTEGER,
-      createdAt TEXT
-    );
-    CREATE TABLE IF NOT EXISTS ai_results (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      source TEXT,
-      logo TEXT,
-      dailyReturn REAL,
-      weeklyReturn REAL,
-      currentMonthReturn REAL,
-      yearCumulativeReturn REAL,
-      winRate REAL,
-      totalTradesMonth INTEGER,
-      maxDrawdown REAL,
-      equityData TEXT,
-      status TEXT,
-      lastSync TEXT,
-      isLive INTEGER,
-      trackingUrl TEXT
-    );
-    CREATE TABLE IF NOT EXISTS daily_analysis (
-      id TEXT PRIMARY KEY,
-      text TEXT,
-      date TEXT
-    );
-    CREATE TABLE IF NOT EXISTS banners (
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      content TEXT,
-      type TEXT,
-      isActive INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS config (
-      id TEXT PRIMARY KEY,
-      value TEXT
-    );
-    CREATE TABLE IF NOT EXISTS news_ai_cache (
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      content TEXT,
-      keyPoints TEXT,
-      impact TEXT,
-      sentiment TEXT,
-      createdAt TEXT
-    );
-    CREATE TABLE IF NOT EXISTS fcm_tokens (
-      token TEXT PRIMARY KEY,
-      userId TEXT,
-      updatedAt TEXT
-    );
-  `);
+  try {
+    sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS community_updates (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        description TEXT,
+        date TEXT,
+        isImportant INTEGER,
+        createdAt TEXT
+      );
+      CREATE TABLE IF NOT EXISTS ai_results (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        source TEXT,
+        logo TEXT,
+        dailyReturn REAL,
+        weeklyReturn REAL,
+        currentMonthReturn REAL,
+        yearCumulativeReturn REAL,
+        winRate REAL,
+        totalTradesMonth INTEGER,
+        maxDrawdown REAL,
+        equityData TEXT,
+        status TEXT,
+        lastSync TEXT,
+        isLive INTEGER,
+        trackingUrl TEXT
+      );
+      CREATE TABLE IF NOT EXISTS daily_analysis (
+        id TEXT PRIMARY KEY,
+        text TEXT,
+        date TEXT
+      );
+      CREATE TABLE IF NOT EXISTS banners (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        content TEXT,
+        type TEXT,
+        isActive INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS config (
+        id TEXT PRIMARY KEY,
+        value TEXT
+      );
+      CREATE TABLE IF NOT EXISTS news_ai_cache (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        content TEXT,
+        keyPoints TEXT,
+        impact TEXT,
+        sentiment TEXT,
+        createdAt TEXT
+      );
+      CREATE TABLE IF NOT EXISTS fcm_tokens (
+        token TEXT PRIMARY KEY,
+        userId TEXT,
+        updatedAt TEXT
+      );
+    `);
+  } catch (err: any) {
+    console.error("[SQLite] Error during table creation:", err.message);
+    if (err.message.includes('malformed') || err.message.includes('corrupt')) {
+       // Re-try one last time with fresh file if exec failed due to corruption appearing later
+       console.warn("[SQLite] Corruption detected during schema init, wiping...");
+       sqliteDb.close();
+       if (fs.existsSync(sqlitePath)) fs.unlinkSync(sqlitePath);
+       sqliteDb = new Database(sqlitePath);
+       // (Recursive call avoided for simplicity, assuming second attempt is fresh)
+    }
+  }
 
   // Run migration if snapshot exists
   try {
@@ -657,6 +686,7 @@ async function startServer() {
       
       if (ai instanceof GoogleGenAI) {
         // Try gemini-1.5-flash, but fallback if 404
+        // Use full model name with prefix if needed, or try without
         let model = "gemini-1.5-flash";
         
         const runAI = async (modelName: string) => {
@@ -690,8 +720,11 @@ async function startServer() {
         } catch (e: any) {
           console.warn(`[AI Process] Model ${model} failed, trying fallback:`, e.message);
           if (e.message.includes('not found') || e.message.includes('404')) {
-            // Fallback to gemini-2.0-flash or just gemini-1.5-flash with prefix
-            return await runAI("gemini-2.0-flash");
+            // Try with 'models/' prefix or a newer alias
+            if (!model.startsWith('models/')) {
+              return await runAI(`models/${model}`);
+            }
+            return await runAI("gemini-1.5-flash-latest");
           }
           throw e;
         }
@@ -785,7 +818,9 @@ async function updateAIResultsFromData(data: any[]) {
       }
 
       // If still no match, generate a deterministic stable ID based on Name + Source to avoid duplicates across syncs
-      const stableId = Buffer.from(`${traderName}-${sourceName}`).toString('base64').replace(/=/g, '').substring(0, 20);
+      const normName = traderName.trim().toLowerCase();
+      const normSource = sourceName.trim().toLowerCase();
+      const stableId = Buffer.from(`${normName}-${normSource}`).toString('base64').replace(/=/g, '').substring(0, 20);
       const id = targetIA?.id || stableId;
 
       const aiData = {
