@@ -8,9 +8,9 @@ import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import fs from "fs";
-import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import OpenAI from "openai";
 import { randomUUID } from "node:crypto";
+import axios from "axios";
 
 // Load Firebase Config safely
 let firebaseConfig: any = {};
@@ -371,7 +371,7 @@ async function startServer() {
       env: {
         NODE_ENV: process.env.NODE_ENV,
         HAS_SERVICE_ACCOUNT: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-        HAS_GEMINI_KEY: !!process.env.GEMINI_API_KEY,
+        HAS_XAI_KEY: !!process.env.XAI_API_KEY,
       }
     };
 
@@ -850,205 +850,80 @@ async function startServer() {
     }
   });
 
-  // AI Service Factory
-  const sanitizeApiKey = (key: string) => {
-    if (!key) return "";
-    const s = key.trim().replace(/^["']|["']$/g, '');
-    if (s === "MY_GEMINI_API_KEY" || s === "YOUR_GEMINI_API_KEY" || s.toLowerCase().includes("your_secret")) return "";
-    return s;
-  };
-
-  const getAIProvider = (): any => {
-    const provider = process.env.PREFERRED_AI_PROVIDER || 'gemini';
-    
-    if (provider === 'grok' && process.env.GROK_API_KEY) {
-      return new OpenAI({ apiKey: sanitizeApiKey(process.env.GROK_API_KEY), baseURL: 'https://api.x.ai/v1' });
-    }
-    
-    if (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
-      return new OpenAI({ apiKey: sanitizeApiKey(process.env.DEEPSEEK_API_KEY), baseURL: 'https://api.deepseek.com' });
-    }
-
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const googleAiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-    const syncKey = process.env.SYNC_API_KEY;
-    
-    let rawKey = geminiKey || googleAiKey || "";
-    if (syncKey && syncKey.startsWith('AIza') && !rawKey.startsWith('AIza')) {
-       rawKey = syncKey;
-    }
-
-    const apiKey = sanitizeApiKey(rawKey);
-    return new GoogleGenAI({ 
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-  };
-
+  // AI Service logic for Grok (xAI)
   app.post("/api/ai-process", async (req, res) => {
     const { prompt, type, stream = false } = req.body;
-    
-    const envGeminiKey = process.env.GEMINI_API_KEY || "";
-    const envGoogleKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY || "";
-    
-    let rawKey = envGeminiKey || envGoogleKey;
-    const apiKey = sanitizeApiKey(rawKey);
+    const apiKey = process.env.XAI_API_KEY;
 
     if (!apiKey) {
       return res.status(400).json({ 
-        error: "GEMINI_API_KEY não configurada.",
-        details: "A variável de ambiente GEMINI_API_KEY está ausente."
+        error: "XAI_API_KEY não configurada.",
+        details: "A variável de ambiente XAI_API_KEY está ausente no Railway."
       });
     }
 
     try {
-      const ai = getAIProvider();
+      // Extract the news text from the prompt (it usually ends with the news content)
+      // The user wants a specific format for Grok call.
+      const newsContent = prompt.split("Notícia:")[1]?.trim() || prompt;
       
-      if (ai && (typeof ai.models !== 'undefined' || typeof ai.getGenerativeModel === 'function')) {
-        let modelName = "gemini-3-flash-preview";
-        
-        const runAI = async (model: string, retryCount = 0): Promise<any> => {
-          try {
-            console.log(`[AI runAI] Trying model: ${model} (Provider: ${process.env.PREFERRED_AI_PROVIDER || 'gemini'})`);
-            // Support both @google/genai (new) and @google/generative-ai (legacy)
-            if (typeof ai.models !== 'undefined') {
-              // The new @google/genai SDK (V1) works best with IDs or full resource paths.
-              const modelId = model.replace(/^models\//, '');
-              
-              const options = {
-                model: modelId,
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                config: {
-                  ...(type === 'json' ? { responseMimeType: "application/json" } : {}),
-                  maxOutputTokens: 1024
-                }
-              };
+      const grokPrompt = `Analise a notícia abaixo em português. Responda APENAS em JSON: {"sumario": "2 frases", "pontos_chave": ["ponto1","ponto2","ponto3"]} \n\nNotícia: ${newsContent}`;
 
-              if (stream) {
-                res.setHeader('Content-Type', 'text/event-stream');
-                res.setHeader('Cache-Control', 'no-cache');
-                res.setHeader('Connection', 'keep-alive');
-                
-                const result = await ai.models.generateContentStream(options);
-                for await (const chunk of result) {
-                  let text = "";
-                  try {
-                    if ((chunk as any).candidates?.[0]?.content?.parts?.[0]?.text) {
-                      text = (chunk as any).candidates[0].content.parts[0].text;
-                    } else if (typeof chunk.text === 'function') {
-                      text = chunk.text();
-                    } else if ((chunk as any).text) {
-                      text = (chunk as any).text;
-                    }
-                  } catch (err) {}
-                  
-                  if (text) res.write(`data: ${JSON.stringify({ text })}\n\n`);
-                }
-                res.write('data: [DONE]\n\n');
-                return res.end();
-              } else {
-                const result = await ai.models.generateContent(options);
-                
-                let text = "";
-                try {
-                  if (result.response?.candidates?.[0]?.content?.parts?.[0]?.text) {
-                    text = result.response.candidates[0].content.parts[0].text;
-                  } else if (typeof result.response.text === 'function') {
-                    text = result.response.text();
-                  } else if ((result.response as any).text) {
-                    text = (result.response as any).text;
-                  }
-                } catch (err) {}
-                
-                return res.json({ text });
-              }
-            } else {
-              // Legacy SDK style
-              const genModel = ai.getGenerativeModel({ model });
-              if (stream) {
-                res.setHeader('Content-Type', 'text/event-stream');
-                res.setHeader('Cache-Control', 'no-cache');
-                res.setHeader('Connection', 'keep-alive');
-                
-                const result = await genModel.generateContentStream(prompt);
-                for await (const chunk of result.stream) {
-                  const text = chunk.text() || "";
-                  res.write(`data: ${JSON.stringify({ text })}\n\n`);
-                }
-                res.write('data: [DONE]\n\n');
-                return res.end();
-              } else {
-                const result = await genModel.generateContent({
-                  contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                  generationConfig: {
-                    ...(type === 'json' ? { responseMimeType: "application/json" } : {}),
-                    maxOutputTokens: 1024
-                  }
-                });
-                return res.json({ text: result.response.text() || "" });
-              }
-            }
-          } catch (e: any) {
-             const errorMessage = e.message || "";
-             if (errorMessage.includes("429") && retryCount < 2 && !stream) {
-                const waitTime = retryCount === 0 ? 2000 : 5000;
-                console.warn(`[AI runAI] Quota hit (429), retrying in ${waitTime}ms...`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
-                return runAI(model, retryCount + 1);
+      if (stream) {
+        // Simple streaming relay for Grok
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        const response = await axios.post('https://api.x.ai/v1/chat/completions', {
+          model: "grok-3-mini",
+          messages: [{ role: "user", content: grokPrompt }],
+          max_tokens: 1024,
+          stream: true
+        }, {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          responseType: 'stream'
+        });
+
+        response.data.on('data', (chunk: any) => {
+          const lines = chunk.toString().split('\n').filter((line: string) => line.trim() !== '');
+          for (const line of lines) {
+             if (line.includes('data: [DONE]')) {
+               res.write('data: [DONE]\n\n');
+               return;
              }
-             console.error(`[AI runAI] Error with model ${model}:`, errorMessage);
-             throw e;
+             if (line.startsWith('data: ')) {
+               try {
+                 const json = JSON.parse(line.substring(6));
+                 const text = json.choices[0]?.delta?.content || "";
+                 if (text) res.write(`data: ${JSON.stringify({ text })}\n\n`);
+               } catch (e) {}
+             }
           }
-        };
+        });
 
-        try {
-          return await runAI(modelName);
-        } catch (e: any) {
-          console.warn(`[AI Process] Model ${modelName} failed, trying fallback:`, e.message);
-          if (e.message.includes('not found') || e.message.includes('404')) {
-            // Try newer versions or stable versions
-            try {
-              return await runAI("gemini-flash-latest");
-            } catch (e2) {
-              try {
-                return await runAI("gemini-3.1-pro-preview");
-              } catch (e3) {
-                return await runAI("gemini-2.0-flash-exp");
-              }
-            }
-          }
-          throw e;
-        }
+        response.data.on('end', () => res.end());
       } else {
-        if (stream) {
-          res.setHeader('Content-Type', 'text/event-stream');
-          const completion = await ai.chat.completions.create({
-            model: process.env.PREFERRED_AI_PROVIDER === 'grok' ? "grok-beta" : "deepseek-chat",
-            messages: [{ role: 'user', content: prompt }],
-            stream: true,
-          });
-          for await (const chunk of completion) {
-            const text = chunk.choices[0]?.delta?.content || "";
-            res.write(`data: ${JSON.stringify({ text })}\n\n`);
+        const response = await axios.post('https://api.x.ai/v1/chat/completions', {
+          model: "grok-3-mini",
+          messages: [{ role: "user", content: grokPrompt }],
+          max_tokens: 1024
+        }, {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
           }
-          res.write('data: [DONE]\n\n');
-          return res.end();
-        } else {
-          const completion = await ai.chat.completions.create({
-            model: process.env.PREFERRED_AI_PROVIDER === 'grok' ? "grok-beta" : "deepseek-chat",
-            messages: [{ role: 'user', content: prompt }],
-            response_format: type === 'json' ? { type: "json_object" } : { type: "text" }
-          });
-          return res.json({ text: completion.choices[0].message.content });
-        }
+        });
+
+        const text = response.data.choices[0].message.content;
+        return res.json({ text });
       }
-    } catch (error) {
-      console.error("AI Proxy Error:", error);
-      res.status(500).json({ error: String(error) });
+    } catch (error: any) {
+      console.error("Grok API Error:", error.response?.data || error.message);
+      res.status(500).json({ error: "Erro ao processar com Grok", details: error.message });
     }
   });
 

@@ -85,19 +85,15 @@ export function NewsSection() {
       }
 
       // Se for background e não tivermos no cache, não vamos forçar a geração automática 
-      // para economizar cota da API Gemini (limite de 20 requisições/dia no plano gratuito)
+      // para economizar cota da API Grok (xAI)
       if (background) {
         setIsGenerating(false);
         return item;
       }
 
-      // 3. Se cache falhar ou estiver incompleto, chamamos o Gemini
-      const prompt = `Analise a notícia abaixo em português. Responda APENAS em JSON válido, sem texto extra:
-      {
-        "sumario": "máximo 2 frases curtas",
-        "pontos_chave": ["ponto 1", "ponto 2", "ponto 3"]
-      }
-
+      // 3. Se cache falhar ou estiver incompleto, chamamos o Grok (xAI)
+      const prompt = `Analise a notícia abaixo em português. Responda APENAS em JSON: {"sumario": "2 frases", "pontos_chave": ["ponto1","ponto2","ponto3"]} 
+      
       Notícia: ${item.title} | ${item.description}`;
 
       // Promise da IA
@@ -456,7 +452,7 @@ export function NewsSection() {
                   </div>
                   <div>
                     <h2 className="text-[10px] md:text-xs font-black text-brand-gold uppercase tracking-[2px]">Terminal de Inteligência</h2>
-                    <p className="text-[9px] md:text-[10px] text-gray-500 uppercase font-bold tracking-widest">Processamento via Gemini AI</p>
+                    <p className="text-[9px] md:text-[10px] text-gray-500 uppercase font-bold tracking-widest">Processamento via Grok AI</p>
                   </div>
                 </div>
                 <button 
