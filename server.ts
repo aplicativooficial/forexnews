@@ -27,6 +27,7 @@ try {
 let db: any = null;
 let messaging: any = null;
 let sqliteDb: any = null;
+const firebaseStatus = { connection: 'connecting', error: null as string | null };
 
 async function initFirebase() {
   try {
@@ -591,7 +592,13 @@ async function startServer() {
       
       if (db) {
         const doc = await db.collection('news_ai_cache').doc(id).get();
-        if (doc.exists) return res.json(doc.data());
+        if (doc.exists) {
+           const data = doc.data();
+           return res.json({
+             ...data,
+             fullContent: data?.fullContent || data?.content // Ensure fullContent is returned
+           });
+        }
       }
       throw new Error("No Firestore cache");
     } catch (err) {
@@ -599,6 +606,7 @@ async function startServer() {
       if (row) {
         return res.json({
           ...row,
+          fullContent: row.fullContent || row.content, // Ensure fullContent is returned
           keyPoints: JSON.parse(row.keyPoints || '[]')
         });
       }
@@ -610,13 +618,18 @@ async function startServer() {
     try {
       const cache = req.body;
       if (!cache.createdAt) cache.createdAt = new Date().toISOString();
+      const contentValue = cache.fullContent || cache.content || "";
       
       sqliteDb.prepare("REPLACE INTO news_ai_cache (id, title, content, keyPoints, impact, sentiment, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(cache.id, cache.title, cache.content, JSON.stringify(cache.keyPoints || []), cache.impact, cache.sentiment, cache.createdAt);
+        .run(cache.id, cache.title, contentValue, JSON.stringify(cache.keyPoints || []), cache.impact, cache.sentiment, cache.createdAt);
       
       if (db) {
         try {
-          await db.collection('news_ai_cache').doc(cache.id).set(cache);
+          await db.collection('news_ai_cache').doc(cache.id).set({
+            ...cache,
+            content: contentValue,
+            fullContent: contentValue
+          });
         } catch (fErr) {
           console.warn("[Firestore] Cache write failed:", fErr.message);
         }

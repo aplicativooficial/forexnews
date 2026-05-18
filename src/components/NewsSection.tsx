@@ -49,92 +49,121 @@ export function NewsSection() {
   };
 
   const generateAiInsights = async (item: NewsItem, background = false) => {
-    const newsItem = news.find(n => n.id === item.id);
-    if (newsItem?.fullContent && newsItem?.summary) {
-      if (!background) setSelectedNews(newsItem);
-      return newsItem;
+    // 1. Verificar se já temos os dados completos no estado atual
+    const currentItem = news.find(n => n.id === item.id) || item;
+    if (currentItem.summary && 
+        currentItem.summary !== "Não foi possível gerar análise" && 
+        currentItem.fullContent && 
+        currentItem.fullContent !== item.description) {
+      if (!background) setSelectedNews(currentItem);
+      return currentItem;
     }
     
     if (!background) {
       setIsGenerating(true);
-      setSelectedNews({ ...item, fullContent: item.description });
+      // Mantém o título mas limpa o conteúdo antigo para o loading
+      setSelectedNews({ ...item, fullContent: undefined, summary: undefined, keyPoints: [] });
     }
 
     try {
-      const cachedData = await api.getNewsCache(item.id);
-      if (cachedData) {
-        const updatedItem = { ...item, ...cachedData };
-        setNews(prev => prev.map(n => n.id === item.id ? updatedItem : n));
-        if (!background) setSelectedNews(updatedItem);
-        setIsGenerating(false);
-        return updatedItem;
-      }
-
-      if (background) {
-        const prompt = `Analista Forex Sênior: Traduza para PT-BR e Analise.
-        Notícia: ${item.title} | ${item.description}
-        Retorne JSON: { "fullContent": "tradução detalhada", "summary": "resumo", "keyPoints": [], "recommendation": "" }`;
-
-        const response = await api.processAi(prompt, 'json');
-        const json = await response.json();
-        const data = JSON.parse(json.text || '{}');
+      // 2. Primeiro, tentamos buscar do cache no servidor
+      const cachedData = await api.getNewsCache(item.id).catch(() => null);
+      
+      if (cachedData && 
+          cachedData.summary && 
+          cachedData.summary !== "Não foi possível gerar análise" && 
+          (cachedData.fullContent || cachedData.content)) {
         
-        const finalItem = { ...item, ...data };
-        await api.saveNewsCache({ id: item.id, ...data });
-        setNews(prev => prev.map(n => n.id === item.id ? finalItem : n));
-        return finalItem;
-      }
-
-      // Foreground: Use stream for instant feedback
-      const streamPrompt = `Atue como analista Forex sênior. Traduza e analise esta notícia para PT-BR.
-      Seja detalhado mas direto (3-4 parágrafos pequenos).
-      Notícia: ${item.title} | ${item.description}`;
-
-      const response = await api.processAi(streamPrompt, 'text', true);
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let fullContent = "";
-
-      // Parallel metadata fetch
-      const metaPromise = (async () => {
-        const metaPrompt = `Gere resumo curto, 3 pontos chave e recomendação para: ${item.title}. 
-        Retorne JSON { "summary": "...", "keyPoints": [], "recommendation": "..." }.`;
-        const res = await api.processAi(metaPrompt, 'json');
-        const resJson = await res.json();
-        return JSON.parse(resJson.text || '{}');
-      })();
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const dataStr = line.replace('data: ', '');
-              if (dataStr === '[DONE]') break;
-              try {
-                const data = JSON.parse(dataStr);
-                fullContent += data.text;
-                setSelectedNews(prev => prev && prev.id === item.id ? { ...prev, fullContent } : prev);
-              } catch (e) {}
-            }
-          }
+        const fullContent = cachedData.fullContent || cachedData.content;
+        if (fullContent && fullContent !== item.description) {
+          const updatedItem = { ...item, ...cachedData, fullContent };
+          setNews(prev => prev.map(n => n.id === item.id ? updatedItem : n));
+          if (!background) setSelectedNews(updatedItem);
+          setIsGenerating(false);
+          return updatedItem;
         }
       }
 
-      const meta = await metaPromise;
-      const finalItem = { ...item, fullContent, ...meta };
-      await api.saveNewsCache({ id: item.id, fullContent, ...meta });
+      // Se for background e não tivermos no cache, não vamos forçar a geração automática 
+      // para economizar cota da API Gemini (limite de 20 requisições/dia no plano gratuito)
+      if (background) {
+        setIsGenerating(false);
+        return item;
+      }
+
+      // 3. Se cache falhar ou estiver incompleto, chamamos o Gemini
+      const prompt = `Analista Forex Sênior: Traduza e analise esta notícia para PT-BR.
+      Notícia: ${item.title} | ${item.description}
+      
+      Retorne APENAS um JSON estruturado com o seguinte formato:
+      {
+        "fullContent": "Tradução detalhada e análise técnica (3-4 parágrafos)",
+        "summary": "Breve resumo executivo",
+        "keyPoints": ["Ponto chave 1", "Ponto chave 2", "Ponto chave 3"],
+        "recommendation": "Compra/Venda/Neutro"
+      }`;
+
+      // Promise da IA
+      const aiPromise = (async () => {
+        const response = await api.processAi(prompt, 'json');
+        if (!response.ok) {
+           const errText = await response.text();
+           if (errText.includes("429") || response.status === 429) throw new Error("QUOTA_EXCEEDED");
+           throw new Error("API_ERROR");
+        }
+        const json = await response.json();
+        const data = JSON.parse(json.text || '{}');
+        if (!data.summary || !data.fullContent) throw new Error("INCOMPLETE_RESPONSE");
+        return data;
+      })();
+
+      // Promise de Timeout (15 segundos)
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("TIMEOUT")), 15000)
+      );
+
+      // Corrida entre a IA e o Cronômetro
+      const aiData = await Promise.race([aiPromise, timeoutPromise]) as any;
+
+      const finalItem = { ...item, ...aiData };
+      
+      // 4. Salvar no cache para uso futuro
+      await api.saveNewsCache({ id: item.id, ...aiData }).catch(() => null);
+      
+      // 5. Atualizar UI
       setNews(prev => prev.map(n => n.id === item.id ? finalItem : n));
-      setSelectedNews(finalItem);
+      if (!background) setSelectedNews(finalItem);
       setIsGenerating(false);
       return finalItem;
-    } catch (error) {
+
+    } catch (error: any) {
       console.error("AI Insight error:", error);
+      
+      let errorMsg = "Não foi possível gerar análise";
+      let details = "Erro na comunicação com a Inteligência Artificial. Tente novamente mais tarde.";
+      
+      if (error.message === "TIMEOUT") {
+        details = "O sistema demorou mais de 15 segundos para processar. Tente novamente.";
+      } else if (error.message === "QUOTA_EXCEEDED") {
+        details = "Limite de cota de inteligência artificial excedido. A IA do plano gratuito permite poucas consultas simultâneas. Tente novamente em 1 minuto.";
+      }
+
+      const errorItem = { 
+        ...item, 
+        summary: errorMsg,
+        fullContent: details,
+        keyPoints: ["Erro de processamento", error.message || "Falha desconhecida"]
+      };
+      
+      // IMPORTANTE: NÃO salvar no cache se for erro de cota ou timeout, 
+      // para permitir que o usuário tente novamente depois sem ficar "preso" no erro.
+      
+      if (!background) {
+        setNews(prev => prev.map(n => n.id === item.id ? errorItem : n));
+        setSelectedNews(errorItem);
+      }
       setIsGenerating(false);
-      return item;
+      return errorItem;
     }
   };
 
@@ -219,12 +248,6 @@ export function NewsSection() {
       const translatedNews = await translateNews(mappedNews);
       setNews(translatedNews);
       checkAndNotify(translatedNews);
-
-      // Trigger background AI generation for top news with slow delay to strictly follow rate limits
-      // Reduce to top 4 news to be safe
-      translatedNews.slice(0, 4).forEach((item, index) => {
-        setTimeout(() => generateAiInsights(item, true), index * 2000);
-      });
     } catch (error) {
       console.error("Error fetching news:", error);
       if (news.length === 0) {
