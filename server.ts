@@ -20,69 +20,69 @@ let db: any = null;
 let messaging: any = null;
 let sqliteDb: any = null;
 
-try {
-  const serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
-  if (fs.existsSync(serviceAccountPath)) {
-    console.log(`[Firebase] Initializing with service account...`);
-    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
-    
-    // Set environment variable for ADC fallback if needed
-    process.env.GOOGLE_APPLICATION_CREDENTIALS = serviceAccountPath;
-    
-    let app;
-    try {
-      app = initializeApp({
-        credential: cert(serviceAccount)
-      });
-    } catch (e: any) {
-      if (e.code === 'app/duplicate-app') {
-        const { getApp } = await import("firebase-admin/app");
-        app = getApp();
-      } else {
-        throw e;
+async function initFirebase() {
+  try {
+    const serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
+    let serviceAccount: any = null;
+
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        console.log(`[Firebase] Initializing from environment variable...`);
+      } catch (e) {
+        console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var");
       }
+    } else if (fs.existsSync(serviceAccountPath)) {
+      console.log(`[Firebase] Initializing with service account file...`);
+      serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+    }
+
+    let app;
+    if (serviceAccount) {
+      try {
+        app = initializeApp({
+          credential: cert(serviceAccount)
+        });
+      } catch (e: any) {
+        if (e.code === 'app/duplicate-app') {
+          const { getApp } = await import("firebase-admin/app");
+          app = getApp();
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      console.warn("[Firebase] No service account found. Falling back to project ID from config.");
+      app = initializeApp({
+        projectId: firebaseConfig.projectId
+      });
     }
     
     const configDbId = firebaseConfig.firestoreDatabaseId;
-    console.log(`[Firebase] Attempting to use database: ${configDbId || '(default)'}`);
-    
     db = getFirestore(app, configDbId || undefined);
     messaging = getMessaging(app);
     
     // Verificação de conexão imediata
     db.collection('health_check').limit(1).get().catch((err: any) => {
-      console.warn("[Firebase] Auth test failed:", err.message);
+      console.warn("[Firebase] Health check failed:", err.message);
       if (err.message.includes('UNAUTHENTICATED') || err.message.includes('PERMISSION_DENIED')) {
-        console.warn("[Firebase] Disabling Firestore due to authentication failure.");
+        console.warn("[Firebase] Disabling Firebase due to invalid credentials.");
         db = null;
         messaging = null;
       }
     });
-  } else {
-    console.warn("[Firebase] No service account file found. Falling back to project ID.");
-    const app = initializeApp({
-      projectId: firebaseConfig.projectId
-    });
-    db = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
-    messaging = getMessaging(app);
-    
-    // Test auth for fallback too
-    db.collection('health_check').limit(1).get().catch((err: any) => {
-      if (err.message.includes('UNAUTHENTICATED') || err.message.includes('PERMISSION_DENIED')) {
-        db = null;
-        messaging = null;
-      }
-    });
+  } catch (error) {
+    console.error("Error initializing Firebase Admin:", error);
   }
-} catch (error) {
-  console.error("Error initializing Firebase Admin:", error);
 }
+
+initFirebase();
 
 // Function to handle one-time migration from SQLite to Firestore
 async function migrateIfNeeded() {
   if (!db || !sqliteDb) return;
 
-  console.log("Starting migration to Firestore...");
+  console.log("Checking migration to Firestore...");
   
   try {
     // Migration: AI Results
@@ -96,12 +96,10 @@ async function migrateIfNeeded() {
             isLive: Boolean(r.isLive)
           }, { merge: true });
         } catch (innerErr) {
-          console.warn(`[Migration] Result ${r.id} skip:`, innerErr.message);
+          // Silent skip
         }
       }
-    } catch (e) {
-      console.warn("[Migration] AI Results skipped:", e.message);
-    }
+    } catch (e) {}
 
     // Migration: Community Updates
     try {
@@ -112,16 +110,11 @@ async function migrateIfNeeded() {
             ...u,
             isImportant: Boolean(u.isImportant)
           }, { merge: true });
-        } catch (innerErr) {
-          console.warn(`[Migration] Update ${u.id} skip:`, innerErr.message);
-        }
+        } catch (innerErr) {}
       }
-    } catch (e) {
-      console.warn("[Migration] Updates skipped:", e.message);
-    }
+    } catch (e) {}
     
-    // ... other migrations simplified ...
-    console.log("Migration task finished.");
+    console.log("Migration task ended.");
   } catch (err) {
     console.error("Migration fatal error:", err);
   }
@@ -129,7 +122,7 @@ async function migrateIfNeeded() {
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT && !process.env.K_SERVICE ? Number(process.env.PORT) : 3000;
+  const PORT = 3000; // Force 3000 as per instructions
 
   // Initialize SQLite for persistence fallback
   const sqlitePath = path.join(process.cwd(), 'database.sqlite');
@@ -140,7 +133,7 @@ async function startServer() {
     if (err.message.includes('malformed') || err.message.includes('corrupt')) {
       console.warn("[SQLite] Database is corrupt. Deleting and starting fresh...");
       try {
-        fs.unlinkSync(sqlitePath);
+        if (fs.existsSync(sqlitePath)) fs.unlinkSync(sqlitePath);
         sqliteDb = new Database(sqlitePath);
       } catch (e: any) {
         console.error("[SQLite] Hard failure, using in-memory DB:", e.message);
@@ -215,49 +208,29 @@ async function startServer() {
     // Clean up duplicates if any
     try {
       sqliteDb.prepare("DELETE FROM ai_results WHERE id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER(PARTITION BY name, source ORDER BY id) as rn FROM ai_results) WHERE rn = 1)").run();
-      console.log("[SQLite] Duplicate cleanup completed.");
-    } catch (e: any) {
-      console.warn("[SQLite] Cleanup failed:", e.message);
-    }
+    } catch (e: any) {}
   } catch (err: any) {
     console.error("[SQLite] Error during table creation:", err.message);
-    if (err.message.includes('malformed') || err.message.includes('corrupt')) {
-       // Re-try one last time with fresh file if exec failed due to corruption appearing later
-       console.warn("[SQLite] Corruption detected during schema init, wiping...");
-       sqliteDb.close();
-       if (fs.existsSync(sqlitePath)) fs.unlinkSync(sqlitePath);
-       sqliteDb = new Database(sqlitePath);
-       // (Recursive call avoided for simplicity, assuming second attempt is fresh)
-    }
   }
 
   // Run migration if snapshot exists
   try {
-    const sqlitePathMig = path.join(process.cwd(), 'database.sqlite');
-    if (fs.existsSync(sqlitePathMig) && db) {
+    if (db) {
       await migrateIfNeeded();
     }
-  } catch (e: any) {
-    console.warn("[Startup] Migration info:", e.message);
-  }
+  } catch (e: any) {}
 
   app.use(helmet({
-    contentSecurityPolicy: false, // For development and iFrame compatibility
+    contentSecurityPolicy: false, 
   }));
   app.use(cors());
   app.use(express.json());
 
-  // Middleware to ensure database is ready - more lenient now since we have SQLite
+  // Middleware to ensure database is ready
   app.use((req, res, next) => {
     if (req.path.startsWith('/api') && !sqliteDb && req.path !== '/api/health') {
       return res.status(503).json({ error: "System starting up..." });
     }
-    next();
-  });
-
-  // Log all API requests
-  app.use("/api", (req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
     next();
   });
 
@@ -266,21 +239,40 @@ async function startServer() {
   // AI Results
   app.get("/api/ai-results", async (req, res) => {
     try {
+      let finalResults: any[] = [];
+      
       if (db) {
-        const snapshot = await db.collection('ai_results').get();
-        if (!snapshot.empty) {
-          const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          return res.json(results);
+        try {
+          const snapshot = await db.collection('ai_results').get();
+          if (!snapshot.empty) {
+            finalResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          }
+        } catch (fErr) {
+          console.warn("[Firestore] Results fetch failed, using SQLite.");
         }
       }
-      throw new Error("No Firestore data");
+      
+      if (finalResults.length === 0) {
+        const results = sqliteDb.prepare("SELECT * FROM ai_results").all();
+        finalResults = results.map((r: any) => ({
+          ...r,
+          equityData: JSON.parse(r.equityData || '[]'),
+          isLive: Boolean(r.isLive)
+        }));
+      }
+
+      // Final safety de-duplication by Name + Source
+      const seen = new Set();
+      const uniqueResults = finalResults.filter(r => {
+        const key = `${r.name}-${r.source}`.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      res.json(uniqueResults);
     } catch (err) {
-      const results = sqliteDb.prepare("SELECT * FROM ai_results").all();
-      res.json(results.map((r: any) => ({
-        ...r,
-        equityData: JSON.parse(r.equityData || '[]'),
-        isLive: Boolean(r.isLive)
-      })));
+      res.status(500).json({ error: String(err) });
     }
   });
 
@@ -646,7 +638,7 @@ async function startServer() {
     return s;
   };
 
-  const getAIProvider = () => {
+  const getAIProvider = (): any => {
     const provider = process.env.PREFERRED_AI_PROVIDER || 'gemini';
     
     if (provider === 'grok' && process.env.GROK_API_KEY) {
@@ -667,7 +659,6 @@ async function startServer() {
     }
 
     const apiKey = sanitizeApiKey(rawKey);
-    
     return new GoogleGenAI({ 
       apiKey,
       httpOptions: {
@@ -695,20 +686,20 @@ async function startServer() {
     }
 
     try {
-      const ai = getAIProvider();
+      const ai: any = getAIProvider();
       
-      if (ai instanceof GoogleGenAI) {
-        // Try gemini-3-flash-preview, but fallback if 404
-        let model = "gemini-3-flash-preview";
+      if (ai instanceof GoogleGenAI || (ai && typeof ai.models !== 'undefined')) {
+        // Use gemini-3-flash-preview as recommended by skill
+        let modelName = "gemini-3-flash-preview";
         
-        const runAI = async (modelName: string) => {
+        const runAI = async (model: string) => {
           if (stream) {
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
             
             const result = await ai.models.generateContentStream({
-              model: modelName,
+              model,
               contents: prompt
             });
             for await (const chunk of result) {
@@ -719,7 +710,7 @@ async function startServer() {
             return res.end();
           } else {
             const result = await ai.models.generateContent({
-              model: modelName,
+              model,
               contents: prompt,
               config: type === 'json' ? { responseMimeType: "application/json" } : {}
             });
@@ -728,15 +719,12 @@ async function startServer() {
         };
 
         try {
-          return await runAI(model);
+          return await runAI(modelName);
         } catch (e: any) {
-          console.warn(`[AI Process] Model ${model} failed, trying fallback:`, e.message);
+          console.warn(`[AI Process] Model ${modelName} failed, trying fallback:`, e.message);
           if (e.message.includes('not found') || e.message.includes('404')) {
-            // Try with 'models/' prefix or a newer alias
-            if (!model.startsWith('models/')) {
-              return await runAI(`models/${model}`);
-            }
-            return await runAI("gemini-1.5-flash-latest");
+            // Try with latest alias as fallback
+            return await runAI("gemini-flash-latest");
           }
           throw e;
         }
