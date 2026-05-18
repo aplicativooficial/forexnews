@@ -36,6 +36,12 @@ async function initFirebase() {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
       try {
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        
+        // Fix for private_key formatting issues common in some environments
+        if (serviceAccount && serviceAccount.private_key) {
+          serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        }
+        
         console.log(`[Firebase] Initializing from environment variable...`);
       } catch (e) {
         console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var. Trying file fallback...");
@@ -47,7 +53,25 @@ async function initFirebase() {
         console.log(`[Firebase] Service account file found at ${serviceAccountPath}. Reading...`);
         const content = fs.readFileSync(serviceAccountPath, 'utf8');
         serviceAccount = JSON.parse(content);
-        console.log(`[Firebase] Initializing with service account from file (Project: ${serviceAccount.project_id})...`);
+        
+        // Advanced Fix for private_key formatting issues common in some Node/OpenSSL versions
+        if (serviceAccount && serviceAccount.private_key) {
+          try {
+            const rawKey = serviceAccount.private_key.replace(/\\n/g, '\n');
+            const lines = rawKey.split('\n').filter(l => l.trim().length > 0);
+            const bodyLines = lines.filter(l => !l.includes('-----'));
+            const body = bodyLines.join('').replace(/[^A-Za-z0-9+/=]/g, '');
+            
+            // Re-wrap to PEM standard (64 chars per line)
+            const wrapped = `-----BEGIN PRIVATE KEY-----\n${(body.match(/.{1,64}/g) || []).join('\n')}\n-----END PRIVATE KEY-----\n`;
+            serviceAccount.private_key = wrapped;
+            console.log("[Firebase] Private key re-wrapped and validated.");
+          } catch (keyErr: any) {
+            console.warn("[Firebase] Key cleaning failed, using raw key:", keyErr.message);
+          }
+        }
+        
+        console.log(`[Firebase] Initializing with project ${serviceAccount.project_id}...`);
       } catch (e: any) {
         console.error("[Firebase] Error parsing service account file:", e.message);
       }
