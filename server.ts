@@ -22,17 +22,38 @@ let messaging: ReturnType<typeof getMessaging>;
 try {
   const serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
   if (fs.existsSync(serviceAccountPath)) {
+    // Set environment variable for ADC fallback if needed
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = serviceAccountPath;
+    
     const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+    console.log(`[Firebase] Initializing with service account: ${serviceAccount.client_email}`);
+    
+    // Explicitly provide credential and projectId
     const app = initializeApp({
-      credential: cert(serviceAccount)
+      credential: cert(serviceAccount),
+      projectId: serviceAccount.project_id
     });
-    // Use the specific database ID if provided in config
-    db = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+    
+    const databaseId = firebaseConfig.firestoreDatabaseId || undefined;
+    console.log(`[Firebase] Project: ${serviceAccount.project_id}, Database: ${databaseId || '(default)'}`);
+    
+    db = getFirestore(app, databaseId);
     messaging = getMessaging(app);
-    console.log("Firebase Admin and Firestore initialized successfully");
+    
+    // Verificação de conexão imediata
+    db.collection('health_check').limit(1).get().then(() => {
+      console.log("[Firebase] Connection test: OK");
+    }).catch(err => {
+      console.error("[Firebase] Connection test FAILED:", err.message);
+      if (err.message.includes('UNAUTHENTICATED')) {
+         console.warn("[Firebase] Auth error detected. This usually means the service account key is invalid or revoked.");
+      }
+    });
   } else {
-    console.warn("Firebase service account file not found. Trying default credentials...");
-    const app = initializeApp();
+    console.warn("[Firebase] No service account file found. Falling back to default.");
+    const app = initializeApp({
+      projectId: firebaseConfig.projectId
+    });
     db = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
     messaging = getMessaging(app);
   }
@@ -115,7 +136,7 @@ async function migrateIfNeeded() {
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000; // Hardcoded to 3000 as per infrastructure requirements
 
   // Run migration if snapshot exists
   await migrateIfNeeded();
@@ -145,11 +166,18 @@ async function startServer() {
   // AI Results
   app.get("/api/ai-results", async (req, res) => {
     try {
+      if (!db) {
+        return res.json(inMemoryAIResults);
+      }
       const snapshot = await db.collection('ai_results').get();
+      if (snapshot.empty && inMemoryAIResults.length > 0) {
+        return res.json(inMemoryAIResults);
+      }
       const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       res.json(results);
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      console.warn("[API] Firestore error, falling back to memory:", String(err));
+      res.json(inMemoryAIResults);
     }
   });
 
@@ -226,7 +254,10 @@ async function startServer() {
     // AI Service Factory
   const sanitizeApiKey = (key: string) => {
     if (!key) return "";
-    return key.trim().replace(/^["']|["']$/g, '');
+    const s = key.trim().replace(/^["']|["']$/g, '');
+    // Ignore common placeholder values
+    if (s === "MY_GEMINI_API_KEY" || s === "YOUR_GEMINI_API_KEY" || s.toLowerCase().includes("your_secret")) return "";
+    return s;
   };
 
   const getAIProvider = () => {
@@ -239,9 +270,22 @@ async function startServer() {
     if (provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
       return new OpenAI({ apiKey: sanitizeApiKey(process.env.DEEPSEEK_API_KEY), baseURL: 'https://api.deepseek.com' });
     }
+
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const googleAiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    const syncKey = process.env.SYNC_API_KEY;
+    
+    // Heuristic: check if SYNC_API_KEY looks like a standard Google API key (starts with AIza)
+    let rawKey = geminiKey || googleAiKey || "";
+    if (syncKey && syncKey.startsWith('AIza') && !rawKey.startsWith('AIza')) {
+       console.log("[AI Provider] Heuristic: SYNC_API_KEY looks like a standard Gemini key. Using it as fallback.");
+       rawKey = syncKey;
+    }
+
+    const apiKey = sanitizeApiKey(rawKey);
     
     return new GoogleGenAI({ 
-      apiKey: sanitizeApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || ""),
+      apiKey,
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
@@ -253,7 +297,12 @@ async function startServer() {
   app.post("/api/ai-process", async (req, res) => {
     const { prompt, type, stream = false } = req.body;
     
-    const apiKey = sanitizeApiKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "");
+    const envGeminiKey = process.env.GEMINI_API_KEY || "";
+    const envGoogleKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY || "";
+    
+    let rawKey = envGeminiKey || envGoogleKey;
+    const apiKey = sanitizeApiKey(rawKey);
+
     if (!apiKey) {
       console.error("AI Error: GEMINI_API_KEY is missing or empty.");
       return res.status(400).json({ 
@@ -266,14 +315,26 @@ async function startServer() {
     const maskedKey = apiKey.length > 8 
       ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` 
       : "****";
-    console.log(`Using AI Provider: ${process.env.PREFERRED_AI_PROVIDER || 'gemini'} (Key length: ${apiKey.length}, Masked: ${maskedKey})`);
+    
+    console.log(`[AI Process] Provider: ${process.env.PREFERRED_AI_PROVIDER || 'gemini'}`);
+    console.log(`[AI Process] Key Source: ${envGeminiKey ? 'GEMINI_API_KEY' : envGoogleKey ? 'GOOGLE_GENERATIVE_AI_API_KEY' : 'NONE'}`);
+    console.log(`[AI Process] Key Length: ${apiKey.length}, Masked: ${maskedKey}`);
+    console.log(`[AI Process] Key starts with AIza: ${apiKey.startsWith('AIza')}`);
+
+    if (apiKey && !apiKey.startsWith('AIza')) {
+      console.warn(`[AI Process] WARNING: API Key starts with '${apiKey.substring(0, 4)}'. Standard Gemini API keys usually start with 'AIza'. This might cause authorization errors.`);
+    }
+
+    if (apiKey.length < 20) {
+      console.warn("[AI Process] Warning: API Key seems too short.");
+    }
 
     try {
       const ai = getAIProvider();
       
       if (ai instanceof GoogleGenAI) {
         // use latest model
-        const model = "gemini-1.5-flash"; // More widely available than 3-flash-preview for some keys
+        const model = "gemini-3-flash-preview"; 
 
         if (stream) {
           res.setHeader('Content-Type', 'text/event-stream');
@@ -486,79 +547,98 @@ app.get('/api/notification-status', async (req, res) => {
   }
 });
 
+// Global in-memory cache for AI results (fallback for spreadsheet sync)
+let inMemoryAIResults: any[] = [];
+
 // Function to update results from data array (used by spreadsheet and manual push)
 async function updateAIResultsFromData(data: any[]) {
-  if (!db) return;
-  const snapshot = await db.collection('ai_results').get();
-  const existingResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+  const syncedResults: any[] = [];
+  
+  console.log(`[Sync] Processing ${data.length} results from source...`);
+  
+  // Try to get existing from Firestore if possible for merging
+  let existingResults: any[] = [];
+  if (db) {
+    try {
+      const snapshot = await db.collection('ai_results').get();
+      existingResults = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+    } catch (e) {
+      console.warn("[Sync] Could not fetch existing results from Firestore, using memory only.");
+    }
+  }
 
   for (const item of data) {
-    const traderName = item.trader || '';
-    const sourceName = item.source || '';
-    const dailyReturn = Number(item.daily) || 0;
-    const weeklyReturn = Number(item.weekly) || 0;
-    const monthlyReturn = Number(item.monthly) || 0;
-    const lastUpdateVal = item.lastUpdate || '';
-    const statusStr = String(item.status || '');
-    const maxDrawdown = Number(item.drawdown) || 0;
-    const externalUrl = String(item.url || '');
+    try {
+      const traderName = item.trader || '';
+      const sourceName = item.source || '';
+      const dailyReturn = Number(item.daily) || 0;
+      const weeklyReturn = Number(item.weekly) || 0;
+      const monthlyReturn = Number(item.monthly) || 0;
+      const lastUpdateVal = item.lastUpdate || '';
+      const statusStr = String(item.status || '');
+      const maxDrawdown = Number(item.drawdown) || 0;
+      const externalUrl = String(item.url || '');
 
-    if (!traderName) continue;
+      if (!traderName) continue;
 
-    const normalizedName = `${traderName} ${sourceName}`.trim();
-    const searchName = normalizedName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    
-    const targetIA = existingResults.find(r => {
-       const dbName = `${r.name} ${r.source || ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
-       return dbName.includes(searchName) || searchName.includes(dbName);
-    });
+      const targetIA = existingResults.find(r => {
+         const dbName = `${r.name} ${r.source || ''}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+         const searchName = `${traderName} ${sourceName}`.toLowerCase().replace(/[^a-z0-9]/g, '');
+         return dbName.includes(searchName) || searchName.includes(dbName);
+      });
 
-    console.log(`[Sync] ${traderName} (${sourceName}): Daily=${dailyReturn}%, Monthly=${monthlyReturn}%, Drawdown=${maxDrawdown}%`);
-
-    let logoUrl = targetIA?.logo;
-    if (!logoUrl || logoUrl.includes('pixabay') || logoUrl.includes('bug')) {
-      if (searchName.includes('btc')) {
-         logoUrl = 'https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/svg/color/btc.svg';
-      } else if (searchName.includes('sniper')) {
-         logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=sniper&backgroundColor=D4AF37`;
-      } else if (searchName.includes('hft')) {
-         logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=hft&backgroundColor=D4AF37`;
-      } else {
-         logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=${searchName}&backgroundColor=D4AF37`;
+      let logoUrl = targetIA?.logo;
+      if (!logoUrl || logoUrl.includes('pixabay') || logoUrl.includes('bug')) {
+        const searchSlug = traderName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (searchSlug.includes('btc')) logoUrl = 'https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/svg/color/btc.svg';
+        else logoUrl = `https://api.dicebear.com/7.x/bottts/svg?seed=${searchSlug}&backgroundColor=D4AF37`;
       }
+
+      const aiData = {
+        id: targetIA?.id || randomUUID(),
+        name: traderName,
+        source: sourceName,
+        logo: logoUrl,
+        dailyReturn: Number(dailyReturn.toFixed(2)),
+        weeklyReturn: Number(weeklyReturn.toFixed(2)),
+        currentMonthReturn: Number(monthlyReturn.toFixed(2)),
+        yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
+        winRate: targetIA?.winRate || item.winRate || 0,
+        totalTradesMonth: targetIA?.totalTradesMonth || item.trades || 0,
+        maxDrawdown: Number(maxDrawdown.toFixed(2)),
+        equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
+        status: (statusStr.includes('Ativo') || statusStr === 'Active' || statusStr.includes('✅')) ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
+        lastSync: lastUpdateVal || new Date().toLocaleTimeString('pt-BR'),
+        isLive: true,
+        trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
+      };
+
+      syncedResults.push(aiData);
+
+      // Try to save to Firestore but don't block if it fails
+      if (db) {
+        db.collection('ai_results').doc(aiData.id).set(aiData, { merge: true }).catch(err => {
+          console.error(`[Firestore] Error saving ${traderName}:`, err.message);
+        });
+      }
+    } catch (err: any) {
+      console.error(`[Sync] Error processing item ${item.trader}:`, err.message);
     }
-
-    const aiData = {
-      id: targetIA?.id || randomUUID(),
-      name: traderName,
-      source: sourceName,
-      logo: logoUrl,
-      dailyReturn: Number(dailyReturn.toFixed(2)),
-      weeklyReturn: Number(weeklyReturn.toFixed(2)),
-      currentMonthReturn: Number(monthlyReturn.toFixed(2)),
-      yearCumulativeReturn: targetIA?.yearCumulativeReturn || 0,
-      winRate: targetIA?.winRate || item.winRate || 0,
-      totalTradesMonth: targetIA?.totalTradesMonth || item.trades || 0,
-      maxDrawdown: Number(maxDrawdown.toFixed(2)),
-      equityData: targetIA?.equityData || [100, 100 + monthlyReturn],
-      status: (statusStr.includes('✅') || statusStr.includes('Ativo') || statusStr === 'Active') ? 'Active' : statusStr.includes('🛠') ? 'Maintenance' : 'Beta',
-      lastSync: lastUpdateVal || new Date().toLocaleTimeString('pt-BR'),
-      isLive: true,
-      trackingUrl: externalUrl && externalUrl.startsWith('http') ? externalUrl : targetIA?.trackingUrl || ''
-    };
-
-    await db.collection('ai_results').doc(aiData.id).set(aiData, { merge: true });
+  }
+  
+  if (syncedResults.length > 0) {
+    inMemoryAIResults = syncedResults;
   }
 }
 
 async function syncSpreadsheet() {
-  if (!db) return;
-  console.log("Starting background spreadsheet sync...");
+  console.log("Starting spreadsheet sync...");
   try {
     const SPREADSHEET_URL = 'https://docs.google.com/spreadsheets/d/1hJDvBcirXgkd1RqwIRXFgkn0fIkm2rjSeAh28GxAnJM/gviz/tq?tqx=out:json&sheet=Resultados';
     const response = await fetch(SPREADSHEET_URL);
-    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     
+    const text = await response.text();
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start === -1 || end === -1) throw new Error('Invalid spreadsheet response format');
@@ -568,7 +648,6 @@ async function syncSpreadsheet() {
 
     const parseVal = (v: any, f?: any) => {
       if (typeof f === 'string' && f.includes('%')) {
-        // If it's a formatted percentage, the numerical value is usually a fraction (e.g. 0.0017 for 0.17%)
         const parsed = parseFloat(f.replace(',', '.').replace('%', ''));
         if (!isNaN(parsed)) return parsed;
       }
@@ -583,16 +662,17 @@ async function syncSpreadsheet() {
       daily: parseVal(row.c[2]?.v, row.c[2]?.f),
       weekly: parseVal(row.c[3]?.v, row.c[3]?.f),
       monthly: parseVal(row.c[4]?.v, row.c[4]?.f),
-      lastUpdate: row.c[5]?.f || row.c[5]?.v || '', // Use formatted date if possible
+      lastUpdate: row.c[5]?.f || row.c[5]?.v || '',
       status: row.c[6]?.v || '',
       drawdown: parseVal(row.c[7]?.v, row.c[7]?.f),
       url: row.c[8]?.v || ''
     }));
 
     await updateAIResultsFromData(dataToSync);
-    console.log("Background spreadsheet sync completed successfully.");
-  } catch (err) {
-    console.error("Background sync error:", err);
+    console.log(`[Sync] Successfully processed ${dataToSync.length} results from spreadsheet.`);
+  } catch (err: any) {
+    console.error("[Sync] Spreadsheet sync error:", err.message);
+    // Don't throw here to avoid crashing startup, but it will be logged.
   }
 }
 
@@ -601,8 +681,9 @@ app.post('/api/admin/sync-sheet', async (req, res) => {
   try {
     await syncSpreadsheet();
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: String(err) });
+  } catch (err: any) {
+    console.error("[API] Manual sync failed:", err.message);
+    res.status(500).json({ error: String(err), details: err.message });
   }
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "Forex News",
-  "description": "Portal profissional de Forex com notícias em tempo real, painel XAU/USD, resultados de IAs e provas sociais.",
+  "description": "Enterprise-grade Forex Trading Portal with real-time news, XAU/USD analytics, AI trading performance tracking and global leaderboards.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
