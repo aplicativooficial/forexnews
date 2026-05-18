@@ -211,6 +211,14 @@ async function startServer() {
         updatedAt TEXT
       );
     `);
+
+    // Clean up duplicates if any
+    try {
+      sqliteDb.prepare("DELETE FROM ai_results WHERE id NOT IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER(PARTITION BY name, source ORDER BY id) as rn FROM ai_results) WHERE rn = 1)").run();
+      console.log("[SQLite] Duplicate cleanup completed.");
+    } catch (e: any) {
+      console.warn("[SQLite] Cleanup failed:", e.message);
+    }
   } catch (err: any) {
     console.error("[SQLite] Error during table creation:", err.message);
     if (err.message.includes('malformed') || err.message.includes('corrupt')) {
@@ -587,7 +595,14 @@ async function startServer() {
       }
 
       if (registrationTokens.length === 0) {
-        return res.status(404).json({ error: "No subscribers found" });
+        return res.status(404).json({ error: "Nenhum usuário inscrito para notificações (FCM tokens)." });
+      }
+
+      if (!messaging) {
+        return res.status(503).json({ 
+          error: "Serviço de Mensagens não disponível.", 
+          details: "O Firebase Admin não foi inicializado corretamente ou as credenciais são inválidas (UNAUTHENTICATED)." 
+        });
       }
 
       const message = {
@@ -601,8 +616,6 @@ async function startServer() {
         },
         tokens: registrationTokens,
       };
-
-      if (!messaging) throw new Error("Messaging not available");
 
       const response = await messaging.sendEachForMulticast(message);
       res.json({ 
@@ -685,9 +698,8 @@ async function startServer() {
       const ai = getAIProvider();
       
       if (ai instanceof GoogleGenAI) {
-        // Try gemini-1.5-flash, but fallback if 404
-        // Use full model name with prefix if needed, or try without
-        let model = "gemini-1.5-flash";
+        // Try gemini-3-flash-preview, but fallback if 404
+        let model = "gemini-3-flash-preview";
         
         const runAI = async (modelName: string) => {
           if (stream) {
