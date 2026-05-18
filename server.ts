@@ -222,12 +222,10 @@ async function startServer() {
     console.error("[SQLite] Error during table creation:", err.message);
   }
 
-  // Run migration if snapshot exists
-  try {
-    if (db) {
-      await migrateIfNeeded();
-    }
-  } catch (e: any) {}
+  // Run migration if snapshot exists - non-blocking
+  if (db) {
+    migrateIfNeeded().catch(e => console.error("[Migration] Non-blocking migration failed:", e));
+  }
 
   app.use(helmet({
     contentSecurityPolicy: false, 
@@ -702,28 +700,33 @@ async function startServer() {
         let modelName = "gemini-3-flash-preview";
         
         const runAI = async (model: string) => {
-          if (stream) {
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('Connection', 'keep-alive');
-            
-            const result = await ai.models.generateContentStream({
-              model,
-              contents: prompt
-            });
-            for await (const chunk of result) {
-              const text = chunk.text || "";
-              res.write(`data: ${JSON.stringify({ text })}\n\n`);
+          try {
+            if (stream) {
+              res.setHeader('Content-Type', 'text/event-stream');
+              res.setHeader('Cache-Control', 'no-cache');
+              res.setHeader('Connection', 'keep-alive');
+              
+              const result = await ai.models.generateContentStream({
+                model,
+                contents: prompt
+              });
+              for await (const chunk of result) {
+                const text = chunk.text || "";
+                res.write(`data: ${JSON.stringify({ text })}\n\n`);
+              }
+              res.write('data: [DONE]\n\n');
+              return res.end();
+            } else {
+              const result = await ai.models.generateContent({
+                model,
+                contents: prompt,
+                config: type === 'json' ? { responseMimeType: "application/json" } : {}
+              });
+              return res.json({ text: result.text || "" });
             }
-            res.write('data: [DONE]\n\n');
-            return res.end();
-          } else {
-            const result = await ai.models.generateContent({
-              model,
-              contents: prompt,
-              config: type === 'json' ? { responseMimeType: "application/json" } : {}
-            });
-            return res.json({ text: result.text || "" });
+          } catch (e: any) {
+             console.error(`[AI runAI] Error with model ${model}:`, e.message);
+             throw e;
           }
         };
 
