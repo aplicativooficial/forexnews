@@ -39,58 +39,59 @@ async function initFirebase() {
         // Remove surrounding quotes if any (common in some env editors)
         if (rawJson.startsWith("'") && rawJson.endsWith("'")) rawJson = rawJson.slice(1, -1);
         if (rawJson.startsWith('"') && rawJson.endsWith('"')) rawJson = rawJson.slice(1, -1);
+        
+        // If it looks like it's missing the opening brace, try to fix it
+        if (!rawJson.startsWith('{') && rawJson.includes('"type":')) {
+           console.warn("[Firebase] Env var JSON looks incomplete, attempting to add braces.");
+           rawJson = '{' + rawJson + (rawJson.endsWith('}') ? '' : '}');
+        }
+        
         // Handle escaped double quotes
         if (rawJson.includes('\\"')) rawJson = rawJson.replace(/\\"/g, '"');
         
         serviceAccount = JSON.parse(rawJson);
-        
-        // Fix for private_key formatting issues common in some environments
-        if (serviceAccount && serviceAccount.private_key) {
-          serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-        }
-        
-        console.log(`[Firebase] Initializing from environment variable (Project: ${serviceAccount.project_id})...`);
+        console.log(`[Firebase] Successfully parsed service account from ENV (Project: ${serviceAccount.project_id}).`);
       } catch (e: any) {
         console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var:", e.message);
-        console.log("[Firebase] Raw env var length:", process.env.FIREBASE_SERVICE_ACCOUNT.length);
+        console.log("[Firebase] Env var start (first 20 chars):", process.env.FIREBASE_SERVICE_ACCOUNT.substring(0, 20));
         console.log("[Firebase] Trying file fallback...");
       }
     }
     
     if (!serviceAccount && fs.existsSync(serviceAccountPath)) {
       try {
-        console.log(`[Firebase] Service account file found at ${serviceAccountPath}. Reading...`);
-        const content = fs.readFileSync(serviceAccountPath, 'utf8');
+        const content = fs.readFileSync(serviceAccountPath, 'utf8').trim();
         serviceAccount = JSON.parse(content);
-        
-        // Fix for private_key formatting issues common in some Node/OpenSSL versions
-        if (serviceAccount && serviceAccount.private_key) {
-          try {
-            // Standardize newlines: handle literal \n strings and already parsed newlines
-            let key = serviceAccount.private_key.replace(/\\n/g, '\n');
-            
-            // If the key is one long string with spaces instead of newlines (common in some ENV exports)
-            if (!key.includes('\n') && key.includes('MII')) {
-              key = key.replace(/ /g, '\n')
-                       .replace(/BEGIN\nPRIVATE\nKEY/g, 'BEGIN PRIVATE KEY')
-                       .replace(/END\nPRIVATE\nKEY/g, 'END PRIVATE KEY');
-            }
-            
-            serviceAccount.private_key = key;
-            console.log("[Firebase] Private key standardized.");
-          } catch (keyErr: any) {
-            console.warn("[Firebase] Key processing warning:", keyErr.message);
-          }
-        }
-        
-        console.log(`[Firebase] Initializing with project ${serviceAccount.project_id}...`);
+        console.log(`[Firebase] Service account file read successfully (Project: ${serviceAccount.project_id}).`);
       } catch (e: any) {
         console.error("[Firebase] Error parsing service account file:", e.message);
       }
     }
     
-    if (!serviceAccount) {
-      console.warn(`[Firebase] Service account not found in ENV or at ${serviceAccountPath}`);
+    // Standardization logic for common PaaS messes (newlines becoming spaces or \n literals)
+    if (serviceAccount && serviceAccount.private_key) {
+      try {
+        let key = serviceAccount.private_key;
+        
+        // Handle literal \n first
+        key = key.replace(/\\n/g, '\n');
+        
+        // Handle physical spaces replacing newlines in the base64 body (common mess)
+        if (!key.includes('\n') && key.includes('MII')) {
+          console.warn("[Firebase] Key looks like a single line, reformatting...");
+          const lines = key.split(' ');
+          const header = lines.slice(0, 4).join(' '); // "-----BEGIN PRIVATE KEY-----"
+          const footer = lines.slice(-4).join(' '); // "-----END PRIVATE KEY-----"
+          const body = lines.slice(4, -4).join(''); 
+          // Wrap body at 64 chars
+          const wrappedBody = (body.match(/.{1,64}/g) || []).join('\n');
+          key = `${header}\n${wrappedBody}\n${footer}\n`;
+        }
+        
+        serviceAccount.private_key = key;
+      } catch (keyErr: any) {
+        console.warn("[Firebase] Key processing warning:", keyErr.message);
+      }
     }
 
     let app;
@@ -120,19 +121,15 @@ async function initFirebase() {
     db = getFirestore(app, configDbId || undefined);
     messaging = getMessaging(app);
     
-    // Verificação de conexão imediata usando uma coleção que sabemos existir e ter permissão
+    // Verificação de conexão imediata
     db.collection('updates').limit(1).get().then(() => {
         console.log("[Firebase] Health check SUCCEEDED (updates collection accessible).");
     }).catch((err: any) => {
       console.warn("[Firebase] Health check warning:", err.message);
-      // Log full error details but DO NOT disable by default unless we know it's unrecoverable
-      // The 503 errors reported by the user are caused by setting db/messaging to null here.
       if (err.message.includes('UNAUTHENTICATED')) {
          console.error("[Firebase] Credential Warning: UNAUTHENTICATED. Status Code:", err.code);
-         console.error("[Firebase] Full error details:", JSON.stringify(err));
-         console.error("[Firebase] Project ID in Config:", firebaseConfig.projectId);
          if (serviceAccount) {
-           console.error("[Firebase] Project ID in Service Account:", serviceAccount.project_id);
+           console.error("[Firebase] Project ID Match:", serviceAccount.project_id === firebaseConfig.projectId);
            console.error("[Firebase] Client Email:", serviceAccount.client_email);
          }
       }
@@ -332,13 +329,34 @@ async function startServer() {
   });
 
   // Health Check
-  app.get("/api/health", (req, res) => {
-    res.json({ 
+  app.get("/api/health", async (req, res) => {
+    const data: any = { 
       status: "ok", 
       timestamp: new Date().toISOString(),
-      firebase: db ? "connected" : "unavailable",
-      sqlite: sqliteDb ? "connected" : "failed"
-    });
+      firebase: {
+        db: db ? "initialized" : "unavailable",
+        messaging: messaging ? "initialized" : "unavailable",
+        projectId: firebaseConfig.projectId,
+      },
+      sqlite: sqliteDb ? "connected" : "failed",
+      env: {
+        NODE_ENV: process.env.NODE_ENV,
+        HAS_SERVICE_ACCOUNT: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+        HAS_GEMINI_KEY: !!process.env.GEMINI_API_KEY,
+      }
+    };
+
+    if (db) {
+      try {
+        await db.collection('updates').limit(1).get();
+        data.firebase.connection = "success";
+      } catch (err: any) {
+        data.firebase.connection = "error";
+        data.firebase.error = err.message;
+      }
+    }
+
+    res.json(data);
   });
 
   // AI Results
@@ -824,15 +842,17 @@ async function startServer() {
           try {
             // Support both @google/genai (new) and @google/generative-ai (legacy)
             if (typeof ai.models !== 'undefined') {
-              // Ensure we use the correct model format for the new SDK
-              const fullModelName = model.startsWith('models/') ? model : `models/${model}`;
+              // The new @google/genai SDK (V1) works best with IDs or full resource paths.
+              // If it failed with models/ prefix, try without it or vice-versa.
+              const modelId = model.replace(/^models\//, '');
+              
               if (stream) {
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
                 res.setHeader('Connection', 'keep-alive');
                 
                 const result = await ai.models.generateContentStream({
-                  model: fullModelName,
+                  model: modelId,
                   contents: prompt
                 });
                 for await (const chunk of result) {
@@ -843,7 +863,7 @@ async function startServer() {
                 return res.end();
               } else {
                 const result = await ai.models.generateContent({
-                  model: fullModelName,
+                  model: modelId,
                   contents: prompt,
                   config: type === 'json' ? { responseMimeType: "application/json" } : {}
                 });
@@ -883,11 +903,15 @@ async function startServer() {
         } catch (e: any) {
           console.warn(`[AI Process] Model ${modelName} failed, trying fallback:`, e.message);
           if (e.message.includes('not found') || e.message.includes('404')) {
-            // Try with flash 1.0 or flash-8b
+            // Try newer versions or light versions
             try {
-              return await runAI("gemini-1.5-flash-8b");
-            } catch (innerE) {
-              return await runAI("gemini-1.0-pro");
+              return await runAI("gemini-1.5-flash-latest");
+            } catch (e2) {
+              try {
+                return await runAI("gemini-2.0-flash-exp");
+              } catch (e3) {
+                return await runAI("gemini-1.0-pro");
+              }
             }
           }
           throw e;
