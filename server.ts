@@ -54,28 +54,23 @@ async function initFirebase() {
         const content = fs.readFileSync(serviceAccountPath, 'utf8');
         serviceAccount = JSON.parse(content);
         
-        // Advanced Fix for private_key formatting issues common in some Node/OpenSSL versions
+        // Fix for private_key formatting issues common in some Node/OpenSSL versions
         if (serviceAccount && serviceAccount.private_key) {
           try {
-            // Remove backslash+n literals and normalize newlines
+            // Standardize newlines: handle literal \n strings and already parsed newlines
             let key = serviceAccount.private_key.replace(/\\n/g, '\n');
             
-            // If it's a single line with spaces instead of newlines (common in some env deployments), fix it
-            if (!key.includes('\n') && key.includes(' ')) {
-               key = key.replace(/ /g, '\n').replace(/BEGIN\nPRIVATE\nKEY/g, 'BEGIN PRIVATE KEY').replace(/END\nPRIVATE\nKEY/g, 'END PRIVATE KEY');
+            // If the key is one long string with spaces instead of newlines (common in some ENV exports)
+            if (!key.includes('\n') && key.includes('MII')) {
+              key = key.replace(/ /g, '\n')
+                       .replace(/BEGIN\nPRIVATE\nKEY/g, 'BEGIN PRIVATE KEY')
+                       .replace(/END\nPRIVATE\nKEY/g, 'END PRIVATE KEY');
             }
-
-            const lines = key.split('\n').filter(l => l.trim().length > 0);
-            const bodyLines = lines.filter(l => !l.includes('-----'));
-            const body = bodyLines.join('').replace(/[^A-Za-z0-9+/=]/g, '');
             
-            // Re-wrap to PEM standard (64 chars per line)
-            // This ensures gRPC / OpenSSL 3.x can parse it without "UNSUPPORTED DECODER" error
-            const wrapped = `-----BEGIN PRIVATE KEY-----\n${(body.match(/.{1,64}/g) || []).join('\n')}\n-----END PRIVATE KEY-----\n`;
-            serviceAccount.private_key = wrapped;
-            console.log("[Firebase] Private key standardized for OpenSSL 3 decoding.");
+            serviceAccount.private_key = key;
+            console.log("[Firebase] Private key standardized.");
           } catch (keyErr: any) {
-            console.warn("[Firebase] Key cleaning failed, using raw key:", keyErr.message);
+            console.warn("[Firebase] Key processing warning:", keyErr.message);
           }
         }
         
