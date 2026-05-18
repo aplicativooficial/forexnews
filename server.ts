@@ -136,7 +136,7 @@ async function migrateIfNeeded() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000; // Hardcoded to 3000 as per infrastructure requirements
+  const PORT = process.env.PORT && !process.env.K_SERVICE ? Number(process.env.PORT) : 3000; // Hardcoded to 3000 for AI Studio, but follows env PORT elsewhere
 
   // Run migration if snapshot exists
   await migrateIfNeeded();
@@ -334,7 +334,7 @@ async function startServer() {
       
       if (ai instanceof GoogleGenAI) {
         // use latest model
-        const model = "gemini-3-flash-preview"; 
+        const model = "gemini-1.5-flash"; 
 
         if (stream) {
           res.setHeader('Content-Type', 'text/event-stream');
