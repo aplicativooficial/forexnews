@@ -47,12 +47,14 @@ async function initFirebase() {
         console.log(`[Firebase] Service account file found at ${serviceAccountPath}. Reading...`);
         const content = fs.readFileSync(serviceAccountPath, 'utf8');
         serviceAccount = JSON.parse(content);
-        console.log(`[Firebase] Initializing with service account from file (Project ID: ${serviceAccount.project_id})...`);
-      } catch (e) {
-        console.error("[Firebase] Error parsing service account file:", e);
+        console.log(`[Firebase] Initializing with service account from file (Project: ${serviceAccount.project_id})...`);
+      } catch (e: any) {
+        console.error("[Firebase] Error parsing service account file:", e.message);
       }
-    } else if (!serviceAccount) {
-      console.warn(`[Firebase] No service account found at ${serviceAccountPath} and no valid env var.`);
+    }
+    
+    if (!serviceAccount) {
+      console.warn(`[Firebase] Service account not found in ENV or at ${serviceAccountPath}`);
     }
 
     let app;
@@ -61,16 +63,18 @@ async function initFirebase() {
         app = initializeApp({
           credential: cert(serviceAccount)
         });
+        console.log("[Firebase] Admin SDK initialized successfully with credentials.");
       } catch (e: any) {
         if (e.code === 'app/duplicate-app') {
           const { getApp } = await import("firebase-admin/app");
           app = getApp();
         } else {
+          console.error("[Firebase] Initialization crash:", e.message);
           throw e;
         }
       }
     } else {
-      console.warn("[Firebase] No service account found. Falling back to project ID from config.");
+      console.warn("[Firebase] Initializing without credentials (fallback).");
       app = initializeApp({
         projectId: firebaseConfig.projectId
       });
@@ -703,36 +707,60 @@ async function startServer() {
     }
 
     try {
-      const ai: any = getAIProvider();
+    const ai = getAIProvider();
       
-      if (ai && typeof ai.models !== 'undefined') {
-        // Use gemini-3-flash-preview as recommended by skill
-        let modelName = "gemini-3-flash-preview";
+    if (ai && (typeof ai.models !== 'undefined' || typeof ai.getGenerativeModel === 'function')) {
+        let modelName = "gemini-1.5-flash";
         
         const runAI = async (model: string) => {
           try {
-            if (stream) {
-              res.setHeader('Content-Type', 'text/event-stream');
-              res.setHeader('Cache-Control', 'no-cache');
-              res.setHeader('Connection', 'keep-alive');
-              
-              const result = await ai.models.generateContentStream({
-                model,
-                contents: prompt
-              });
-              for await (const chunk of result) {
-                const text = chunk.text || "";
-                res.write(`data: ${JSON.stringify({ text })}\n\n`);
+            // Support both @google/genai (new) and @google/generative-ai (legacy)
+            if (typeof ai.models !== 'undefined') {
+              if (stream) {
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                
+                const result = await ai.models.generateContentStream({
+                  model,
+                  contents: prompt
+                });
+                for await (const chunk of result) {
+                  const text = chunk.text || "";
+                  res.write(`data: ${JSON.stringify({ text })}\n\n`);
+                }
+                res.write('data: [DONE]\n\n');
+                return res.end();
+              } else {
+                const result = await ai.models.generateContent({
+                  model,
+                  contents: prompt,
+                  config: type === 'json' ? { responseMimeType: "application/json" } : {}
+                });
+                return res.json({ text: result.text || "" });
               }
-              res.write('data: [DONE]\n\n');
-              return res.end();
             } else {
-              const result = await ai.models.generateContent({
-                model,
-                contents: prompt,
-                config: type === 'json' ? { responseMimeType: "application/json" } : {}
-              });
-              return res.json({ text: result.text || "" });
+              // Legacy SDK style
+              const genModel = ai.getGenerativeModel({ model });
+              if (stream) {
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                
+                const result = await genModel.generateContentStream(prompt);
+                for await (const chunk of result.stream) {
+                  const text = chunk.text() || "";
+                  res.write(`data: ${JSON.stringify({ text })}\n\n`);
+                }
+                res.write('data: [DONE]\n\n');
+                return res.end();
+              } else {
+                const result = await genModel.generateContent({
+                  contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                  generationConfig: type === 'json' ? { responseMimeType: "application/json" } : {}
+                });
+                return res.json({ text: result.response.text() || "" });
+              }
             }
           } catch (e: any) {
              console.error(`[AI runAI] Error with model ${model}:`, e.message);
