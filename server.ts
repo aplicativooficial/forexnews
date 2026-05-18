@@ -77,36 +77,22 @@ async function initFirebase() {
       try {
         let key = serviceAccount.private_key;
         
-        // Handle literal \n strings (two characters: \ and n)
-        key = key.replace(/\\n/g, '\n');
+        // Handle literal \n strings (two characters: \ and n) or actual escaped newlines
+        key = key.replace(/\\n/g, '\n').replace(/\n/g, '\n');
         
-        // If the key is one long string with spaces instead of newlines
-        if (!key.includes('\n') && key.includes('MII')) {
-          console.warn("[Firebase] Private key has no newlines but contains MII body, attempting repair...");
-          // Try to handle spaces as delimiters
-          if (key.includes(' ')) {
-            const parts = key.split(' ');
-            if (parts.length > 10) {
-              // Reconstruct PEM
-              const header = "-----BEGIN PRIVATE KEY-----";
-              const footer = "-----END PRIVATE KEY-----";
-              // Remove anything that looks like header/footer first
-              let body = key.replace(/-----BEGIN PRIVATE KEY-----/g, '')
-                            .replace(/-----END PRIVATE KEY-----/g, '')
-                            .replace(/ /g, '');
-              key = `${header}\n${body}\n${footer}\n`;
-            }
-          }
-        }
-
-        // Final normalization: ensure exactly one set of headers and clean newlines
-        key = key.trim();
-        if (!key.includes('-----BEGIN PRIVATE KEY-----')) {
-          key = `-----BEGIN PRIVATE KEY-----\n${key}\n-----END PRIVATE KEY-----\n`;
-        }
+        // Final normalization: remove existing headers temporarily to clean the body
+        let body = key
+          .replace(/-----BEGIN PRIVATE KEY-----/g, '')
+          .replace(/-----END PRIVATE KEY-----/g, '')
+          .replace(/\s/g, ''); // Remove ALL spaces, tabs, and newlines from the body
+          
+        // Reconstruct with proper formatting (64 chars per line)
+        const header = "-----BEGIN PRIVATE KEY-----";
+        const footer = "-----END PRIVATE KEY-----";
+        const formattedBody = body.match(/.{1,64}/g)?.join('\n') || body;
         
-        serviceAccount.private_key = key;
-        console.log(`[Firebase] Key standardized. Length: ${key.length}, Newlines: ${key.includes('\n')}`);
+        serviceAccount.private_key = `${header}\n${formattedBody}\n${footer}\n`;
+        console.log(`[Firebase] Key standardized. Body length: ${body.length}.`);
       } catch (keyErr: any) {
         console.warn("[Firebase] Key processing warning:", keyErr.message);
       }
@@ -115,15 +101,15 @@ async function initFirebase() {
     let app;
     if (serviceAccount) {
       try {
-        // Log basic info (no secrets)
         console.log(`[Firebase] Initializing with service account for ${serviceAccount.project_id}`);
         
-        // Prefer explicit credential object with only necessary fields to avoid signature issues
+        // Pass the raw service account object. If we must pick fields, use the ones from the official ServiceAccount type.
+        // It uses snake_case, NOT camelCase.
         const credential = cert({
-          projectId: serviceAccount.project_id,
-          clientEmail: serviceAccount.client_email,
-          privateKey: serviceAccount.private_key
-        });
+          project_id: serviceAccount.project_id,
+          client_email: serviceAccount.client_email,
+          private_key: serviceAccount.private_key
+        } as any);
 
         app = initializeApp({
           credential
@@ -152,14 +138,19 @@ async function initFirebase() {
     // Verificação de conexão imediata
     db.collection('updates').limit(1).get().then(() => {
         console.log("[Firebase] Health check SUCCEEDED (updates collection accessible).");
+        firebaseStatus.connection = "connected";
     }).catch((err: any) => {
-      console.warn("[Firebase] Health check warning:", err.message);
+      firebaseStatus.connection = "error";
+      firebaseStatus.error = err.message;
       if (err.message.includes('UNAUTHENTICATED')) {
-         console.error("[Firebase] Credential Warning: UNAUTHENTICATED. Status Code:", err.code);
+         console.error("[Firebase] Credential Warning: UNAUTHENTICATED. Code:", err.code);
          if (serviceAccount) {
-           console.error("[Firebase] Project ID Match:", serviceAccount.project_id === firebaseConfig.projectId);
-           console.error("[Firebase] Client Email:", serviceAccount.client_email);
+           console.error("[Firebase] Project ID in SA:", serviceAccount.project_id);
+           console.error("[Firebase] Client Email in SA:", serviceAccount.client_email);
+           console.error("[Firebase] Private Key present:", !!serviceAccount.private_key);
          }
+      } else {
+         console.warn("[Firebase] Health check warning:", err.message);
       }
     });
   } catch (error) {
@@ -312,6 +303,15 @@ async function startServer() {
         token TEXT PRIMARY KEY,
         userId TEXT,
         updatedAt TEXT
+      );
+      CREATE TABLE IF NOT EXISTS notifications (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        body TEXT,
+        url TEXT,
+        subtitle TEXT,
+        createdAt TEXT,
+        isRead INTEGER DEFAULT 0
       );
     `;
     
@@ -657,6 +657,18 @@ async function startServer() {
   app.post('/api/send-notification', async (req, res) => {
     const { title, body, url, subtitle, notificationId } = req.body;
     try {
+      const finalId = notificationId || randomUUID();
+      const createdAt = new Date().toISOString();
+
+      // Save to local notifications table for fallback polling
+      try {
+        sqliteDb.prepare("INSERT INTO notifications (id, title, body, url, subtitle, createdAt) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(finalId, title, body, url, subtitle, createdAt);
+        console.log(`[Notification] Saved locally: ${finalId}`);
+      } catch (dbErr: any) {
+        console.error("[Notification] Local save failed:", dbErr.message);
+      }
+
       let registrationTokens: string[] = [];
       
       if (db) {
@@ -805,6 +817,26 @@ async function startServer() {
     }
   });
 
+  // Local Notifications (Polling Fallback)
+  app.get('/api/notifications', (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 20;
+      const notifications = sqliteDb.prepare("SELECT * FROM notifications ORDER BY createdAt DESC LIMIT ?").all(limit);
+      res.json(notifications);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post('/api/notifications/clear', (req, res) => {
+    try {
+      sqliteDb.prepare("DELETE FROM notifications").run();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // AI Service Factory
   const sanitizeApiKey = (key: string) => {
     if (!key) return "";
@@ -864,7 +896,7 @@ async function startServer() {
     const ai = getAIProvider();
       
     if (ai && (typeof ai.models !== 'undefined' || typeof ai.getGenerativeModel === 'function')) {
-        let modelName = "gemini-1.5-flash";
+        let modelName = "gemini-3-flash-preview";
         
         const runAI = async (model: string) => {
           try {
@@ -952,14 +984,14 @@ async function startServer() {
         } catch (e: any) {
           console.warn(`[AI Process] Model ${modelName} failed, trying fallback:`, e.message);
           if (e.message.includes('not found') || e.message.includes('404')) {
-            // Try newer versions or light versions
+            // Try newer versions or stable versions
             try {
-              return await runAI("gemini-1.5-flash-latest");
+              return await runAI("gemini-flash-latest");
             } catch (e2) {
               try {
-                return await runAI("gemini-2.0-flash-exp");
+                return await runAI("gemini-3.1-pro-preview");
               } catch (e3) {
-                return await runAI("gemini-1.0-pro");
+                return await runAI("gemini-2.0-flash-exp");
               }
             }
           }

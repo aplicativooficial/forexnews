@@ -70,6 +70,30 @@ export default function App() {
 
   // Sync unread state for Community
   useEffect(() => {
+    const pollLocalNotifications = async () => {
+      try {
+        const res = await fetch('/api/notifications?limit=5');
+        const notifications = await res.json();
+        if (notifications && notifications.length > 0) {
+          const latest = notifications[0];
+          const lastNotifiedId = localStorage.getItem('forex_last_notified_id');
+          
+          if (latest.id !== lastNotifiedId) {
+            localStorage.setItem('forex_last_notified_id', latest.id);
+            if (Notification.permission === 'granted') {
+              try {
+                const { showNotification } = await import('./lib/fcm');
+                showNotification(latest.title, {
+                  body: latest.body || "",
+                  tag: latest.id
+                });
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (e) {}
+    };
+
     const checkUnread = () => {
       const updatesStr = localStorage.getItem('forex_community_updates');
       const lastSeenId = localStorage.getItem('forex_last_seen_community_id');
@@ -91,7 +115,11 @@ export default function App() {
     };
 
     checkUnread();
-    const interval = setInterval(checkUnread, 1500);
+    pollLocalNotifications();
+    const interval = setInterval(() => {
+      checkUnread();
+      pollLocalNotifications();
+    }, 1500);
     return () => clearInterval(interval);
   }, [activeSection]);
 
