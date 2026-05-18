@@ -20,11 +20,11 @@ export function NewsSection() {
     }
   }, []);
 
-  const sendPushNotification = (item: NewsItem) => {
+  const sendPushNotification = async (item: NewsItem) => {
     if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(`FOREX NEWS: ${item.title}`, {
+      const { showNotification } = await import('../lib/fcm');
+      showNotification(`FOREX NEWS: ${item.title}`, {
         body: `${item.source} - Impacto: ${item.impact.toUpperCase()}`,
-        icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj4KICA8cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjEwMCIgZmlsbD0iIzBEMEQwRCIvPgogIDxnIHN0cm9rZT0iI0Q0QUYzNyIgc3Ryb2tlLXdpZHRoPSI0MCIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj4KICAgIDxwYXRoIGQ9Ik04MCA0NDAgTCAxOTAgMzEwIEwgMjYwIDM3MCBMIDQ0MCAxNDAiLz4KICAgIDxwYXRoIGQ9Ik0zNTAgMTQwIEwgNDQwIDE0MCBMIDQ0MCAyMzAiLz4KICA8L2c+Cjwvc3ZnPg==',
         tag: item.id 
       });
     }

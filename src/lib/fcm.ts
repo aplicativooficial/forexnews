@@ -85,3 +85,25 @@ export const onMessageListener = () => {
     onMessage(messaging, (payload) => resolve(payload));
   });
 };
+
+export const showNotification = async (title: string, options: NotificationOptions = {}) => {
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  const opt = { 
+    icon: 'https://i.postimg.cc/fby2h1bg/logo-branca2.png',
+    badge: 'https://i.postimg.cc/fby2h1bg/logo-branca2.png',
+    ...options 
+  };
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        await reg.showNotification(title, opt);
+        return;
+      }
+    }
+    new Notification(title, opt);
+  } catch (e) {
+    console.error("Notification API failed:", e);
+  }
+};

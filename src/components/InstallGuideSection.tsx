@@ -36,9 +36,10 @@ export function InstallGuideSection() {
     if ('Notification' in window && Notification.permission === 'default') {
       const permission = await Notification.requestPermission();
       if (permission === 'granted') {
-        new Notification("FOREX NEWS: Terminal Ativo!", {
+        const { showNotification } = await import('../lib/fcm');
+        showNotification("FOREX NEWS: Terminal Ativo!", {
           body: "Você receberá alertas de notícias de alto impacto.",
-          icon: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj4KICA8cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjExMCIgZmlsbD0iIzBEMEQwRCIvPgogIDxwYXRoIGQ9Ik0xMDAgNDEyIEwgMjEwIDMwMiBMIDI3NSAzNjcgTCA0MTIgMTAwIiBzdHJva2U9IiNENCBBRjM3IiBzdHJva2Utd2lkdGg9IjU2IiBmaWxsPSJub25lIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KICA8cGF0aCBkPSJNMzIwIDEwMCBMIDQxMiAxMDAgTCA0MTIgMTkyIiBzdHJva2U9IiNENCBBRjM3IiBzdHJva2Utd2lkdGg9IjU2IiBmaWxsPSJub25lIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIC8+Cjwvc3ZnPg=="
+          icon: "https://i.postimg.cc/fby2h1bg/logo-branca2.png"
         });
       }
     }

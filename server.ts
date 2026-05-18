@@ -22,35 +22,38 @@ let messaging: ReturnType<typeof getMessaging>;
 try {
   const serviceAccountPath = path.join(process.cwd(), 'firebase-service-account.json');
   if (fs.existsSync(serviceAccountPath)) {
-    // Set environment variable for ADC fallback if needed
-    process.env.GOOGLE_APPLICATION_CREDENTIALS = serviceAccountPath;
+    console.log(`[Firebase] Service account file found. Checking integrity...`);
     
-    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
-    console.log(`[Firebase] Initializing with service account: ${serviceAccount.client_email}`);
-    
-    // Explicitly provide credential and projectId
+    // Explicitly provide credential via path to avoid some JSON parsing edge cases
     const app = initializeApp({
-      credential: cert(serviceAccount),
-      projectId: serviceAccount.project_id
+      credential: cert(serviceAccountPath)
     });
     
-    const databaseId = firebaseConfig.firestoreDatabaseId || undefined;
-    console.log(`[Firebase] Project: ${serviceAccount.project_id}, Database: ${databaseId || '(default)'}`);
+    // Try to determine if we should use the named database or default
+    const configDbId = firebaseConfig.firestoreDatabaseId;
+    console.log(`[Firebase] Initialized with key. Attempting to use database: ${configDbId || '(default)'}`);
     
-    db = getFirestore(app, databaseId);
+    db = getFirestore(app, configDbId || undefined);
     messaging = getMessaging(app);
     
     // Verificação de conexão imediata
     db.collection('health_check').limit(1).get().then(() => {
-      console.log("[Firebase] Connection test: OK");
+      console.log("[Firebase] Connection test (Named DB): OK");
     }).catch(err => {
-      console.error("[Firebase] Connection test FAILED:", err.message);
-      if (err.message.includes('UNAUTHENTICATED')) {
-         console.warn("[Firebase] Auth error detected. This usually means the service account key is invalid or revoked.");
+      console.warn("[Firebase] Named DB test failed:", err.message);
+      if (err.message.includes('UNAUTHENTICATED') || err.message.includes('NOT_FOUND')) {
+         console.log("[Firebase] Attempting fallback to Default Database...");
+         const defaultDb = getFirestore(app);
+         defaultDb.collection('health_check').limit(1).get().then(() => {
+            console.log("[Firebase] Connection test (Default DB): OK");
+            db = defaultDb;
+         }).catch(fallbackErr => {
+            console.error("[Firebase] All databases failed authentication:", fallbackErr.message);
+         });
       }
     });
   } else {
-    console.warn("[Firebase] No service account file found. Falling back to default.");
+    console.warn("[Firebase] No service account file found. Falling back to project ID only.");
     const app = initializeApp({
       projectId: firebaseConfig.projectId
     });
@@ -72,31 +75,55 @@ async function migrateIfNeeded() {
   
   try {
     // Migration: AI Results
-    const aiResults = sqliteDb.prepare("SELECT * FROM ai_results").all();
-    for (const r of aiResults as any[]) {
-      await db.collection('ai_results').doc(r.id).set({
-        ...r,
-        equityData: JSON.parse(r.equityData || '[]'),
-        isLive: Boolean(r.isLive)
-      });
+    try {
+      const aiResults = sqliteDb.prepare("SELECT * FROM ai_results").all();
+      for (const r of aiResults as any[]) {
+        try {
+          await db.collection('ai_results').doc(r.id).set({
+            ...r,
+            equityData: JSON.parse(r.equityData || '[]'),
+            isLive: Boolean(r.isLive)
+          }, { merge: true });
+        } catch (innerErr) {
+          console.warn(`[Migration] Failed to migrate result ${r.id}:`, innerErr.message);
+        }
+      }
+    } catch (e) {
+      console.warn("[Migration] AI Results fetch failed:", e.message);
     }
 
     // Migration: Community Updates
-    const community = sqliteDb.prepare("SELECT * FROM community_updates").all();
-    for (const u of community as any[]) {
-      await db.collection('updates').doc(u.id).set({
-        ...u,
-        isImportant: Boolean(u.isImportant)
-      });
+    try {
+      const community = sqliteDb.prepare("SELECT * FROM community_updates").all();
+      for (const u of community as any[]) {
+        try {
+          await db.collection('updates').doc(u.id).set({
+            ...u,
+            isImportant: Boolean(u.isImportant)
+          }, { merge: true });
+        } catch (innerErr) {
+          console.warn(`[Migration] Failed to migrate update ${u.id}:`, innerErr.message);
+        }
+      }
+    } catch (e) {
+      console.warn("[Migration] Updates fetch failed:", e.message);
     }
 
     // Migration: Daily Analysis
-    const analysisArr = sqliteDb.prepare("SELECT * FROM daily_analysis WHERE id = 'current'").all() as any[];
-    if (analysisArr.length > 0) {
-      await db.collection('analysis').doc('current').set({
-        text: analysisArr[0].text,
-        date: analysisArr[0].date
-      });
+    try {
+      const analysisArr = sqliteDb.prepare("SELECT * FROM daily_analysis WHERE id = 'current'").all() as any[];
+      if (analysisArr.length > 0) {
+        try {
+          await db.collection('analysis').doc('current').set({
+            text: analysisArr[0].text,
+            date: analysisArr[0].date
+          }, { merge: true });
+        } catch (innerErr) {
+          console.warn("[Migration] Failed to migrate analysis:", innerErr.message);
+        }
+      }
+    } catch (e) {
+      console.warn("[Migration] Analysis fetch failed:", e.message);
     }
 
     // Migration: Banners
@@ -139,7 +166,11 @@ async function startServer() {
   const PORT = process.env.PORT && !process.env.K_SERVICE ? Number(process.env.PORT) : 3000; // Hardcoded to 3000 for AI Studio, but follows env PORT elsewhere
 
   // Run migration if snapshot exists
-  await migrateIfNeeded();
+  try {
+    await migrateIfNeeded();
+  } catch (e: any) {
+    console.error("[Startup] Migration stalled:", e.message);
+  }
 
   app.use(helmet({
     contentSecurityPolicy: false, // For development and iFrame compatibility
@@ -203,11 +234,13 @@ async function startServer() {
   // Community Updates
   app.get("/api/community", async (req, res) => {
     try {
+      if (!db) return res.json([]);
       const snapshot = await db.collection('updates').orderBy('createdAt', 'desc').get();
       const updates = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       res.json(updates);
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      console.warn("[API] Community fetch error, returning empty list:", String(err));
+      res.json([]); // Fail gracefully to empty list
     }
   });
 
@@ -234,10 +267,12 @@ async function startServer() {
   // Daily Analysis
   app.get("/api/analysis", async (req, res) => {
     try {
+      if (!db) return res.json(null);
       const doc = await db.collection('analysis').doc('current').get();
       res.json(doc.exists ? doc.data() : null);
     } catch (err) {
-      res.status(500).json({ error: String(err) });
+      console.warn("[API] Analysis fetch error:", String(err));
+      res.json(null);
     }
   });
 

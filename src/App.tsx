@@ -138,30 +138,14 @@ export default function App() {
           const { title, body } = payload.notification || payload.data || {};
           
           if (title) {
-            // Use ServiceWorkerRegistration for more reliable notification display
-            if ('serviceWorker' in navigator) {
-              const registration = await navigator.serviceWorker.getRegistration();
-              if (registration) {
-                registration.showNotification(title, {
-                  body: body || "",
-                  icon: 'https://i.postimg.cc/fby2h1bg/logo-branca2.png',
-                  badge: 'https://i.postimg.cc/fby2h1bg/logo-branca2.png',
-                  data: payload.data,
-                  // Use the tag from server for perfect deduplication
-                  tag: payload.data?.tag || payload.data?.notificationId || 'forex-news-alert',
-                  renotify: true,
-                  requireInteraction: true
-                } as NotificationOptions);
-                return;
-              }
-            }
-            
-            // Fallback for browsers without service worker access (rare)
-            new Notification(title, {
+            const { showNotification } = await import('./lib/fcm');
+            showNotification(title, {
               body: body || "",
-              icon: 'https://i.postimg.cc/fby2h1bg/logo-branca2.png',
-              tag: payload.data?.tag || payload.data?.notificationId || 'forex-news-alert'
-            });
+              data: payload.data,
+              tag: payload.data?.tag || payload.data?.notificationId || 'forex-news-alert',
+              renotify: true,
+              requireInteraction: true
+            } as any);
           }
         });
       } catch (err) {
@@ -197,7 +181,8 @@ export default function App() {
         const token = await requestFcmToken();
         
         if (token) {
-          new Notification("✅ Notificações Ativadas!", {
+          const { showNotification } = await import('./lib/fcm');
+          showNotification("✅ Notificações Ativadas!", {
             body: "Você receberá os comunicados do Forex News diretamente aqui.",
             icon: '/pwa-192x192.png'
           });
