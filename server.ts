@@ -36,24 +36,28 @@ async function initFirebase() {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
       try {
         let rawJson = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+        
         // Remove surrounding quotes if any (common in some env editors)
         if (rawJson.startsWith("'") && rawJson.endsWith("'")) rawJson = rawJson.slice(1, -1);
         if (rawJson.startsWith('"') && rawJson.endsWith('"')) rawJson = rawJson.slice(1, -1);
         
+        rawJson = rawJson.trim();
+
         // If it looks like it's missing the opening brace, try to fix it
         if (!rawJson.startsWith('{') && rawJson.includes('"type":')) {
            console.warn("[Firebase] Env var JSON looks incomplete, attempting to add braces.");
-           rawJson = '{' + rawJson + (rawJson.endsWith('}') ? '' : '}');
+           rawJson = '{' + rawJson;
+           if (!rawJson.endsWith('}')) rawJson += '}';
         }
         
         // Handle escaped double quotes
         if (rawJson.includes('\\"')) rawJson = rawJson.replace(/\\"/g, '"');
         
         serviceAccount = JSON.parse(rawJson);
-        console.log(`[Firebase] Successfully parsed service account from ENV (Project: ${serviceAccount.project_id}).`);
+        console.log(`[Firebase] Successfully parsed service account from ENV (Project: ${serviceAccount?.project_id}).`);
       } catch (e: any) {
         console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT env var:", e.message);
-        console.log("[Firebase] Env var start (first 20 chars):", process.env.FIREBASE_SERVICE_ACCOUNT.substring(0, 20));
+        console.log("[Firebase] Env var start (first 30 chars):", process.env.FIREBASE_SERVICE_ACCOUNT.substring(0, 30));
         console.log("[Firebase] Trying file fallback...");
       }
     }
@@ -71,13 +75,38 @@ async function initFirebase() {
     // Standardization logic for common environment variable messy formatting
     if (serviceAccount && serviceAccount.private_key) {
       try {
-        // Handle literal \n strings (two characters: \ and n)
-        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        let key = serviceAccount.private_key;
         
-        // Ensure it has the headers if they are missing (rare but happens)
-        if (!serviceAccount.private_key.includes('-----BEGIN PRIVATE KEY-----')) {
-          serviceAccount.private_key = `-----BEGIN PRIVATE KEY-----\n${serviceAccount.private_key}\n-----END PRIVATE KEY-----\n`;
+        // Handle literal \n strings (two characters: \ and n)
+        key = key.replace(/\\n/g, '\n');
+        
+        // If the key is one long string with spaces instead of newlines
+        if (!key.includes('\n') && key.includes('MII')) {
+          console.warn("[Firebase] Private key has no newlines but contains MII body, attempting repair...");
+          // Try to handle spaces as delimiters
+          if (key.includes(' ')) {
+            const parts = key.split(' ');
+            if (parts.length > 10) {
+              // Reconstruct PEM
+              const header = "-----BEGIN PRIVATE KEY-----";
+              const footer = "-----END PRIVATE KEY-----";
+              // Remove anything that looks like header/footer first
+              let body = key.replace(/-----BEGIN PRIVATE KEY-----/g, '')
+                            .replace(/-----END PRIVATE KEY-----/g, '')
+                            .replace(/ /g, '');
+              key = `${header}\n${body}\n${footer}\n`;
+            }
+          }
         }
+
+        // Final normalization: ensure exactly one set of headers and clean newlines
+        key = key.trim();
+        if (!key.includes('-----BEGIN PRIVATE KEY-----')) {
+          key = `-----BEGIN PRIVATE KEY-----\n${key}\n-----END PRIVATE KEY-----\n`;
+        }
+        
+        serviceAccount.private_key = key;
+        console.log(`[Firebase] Key standardized. Length: ${key.length}, Newlines: ${key.includes('\n')}`);
       } catch (keyErr: any) {
         console.warn("[Firebase] Key processing warning:", keyErr.message);
       }
@@ -839,23 +868,25 @@ async function startServer() {
         
         const runAI = async (model: string) => {
           try {
+            console.log(`[AI runAI] Trying model: ${model} (Provider: ${process.env.PREFERRED_AI_PROVIDER || 'gemini'})`);
             // Support both @google/genai (new) and @google/generative-ai (legacy)
             if (typeof ai.models !== 'undefined') {
               // The new @google/genai SDK (V1) works best with IDs or full resource paths.
-              // If it failed with models/ prefix, try without it or vice-versa.
               const modelId = model.replace(/^models\//, '');
               
+              const options = {
+                model: modelId,
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                config: type === 'json' ? { responseMimeType: "application/json" } : {}
+              };
+
               if (stream) {
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
                 res.setHeader('Connection', 'keep-alive');
                 
-                const result = await ai.models.generateContentStream({
-                  model: modelId,
-                  contents: [{ role: 'user', parts: [{ text: prompt }] }]
-                });
+                const result = await ai.models.generateContentStream(options);
                 for await (const chunk of result) {
-                  // The new SDK chunk might have different structure
                   let text = "";
                   try {
                     if ((chunk as any).candidates?.[0]?.content?.parts?.[0]?.text) {
@@ -872,11 +903,7 @@ async function startServer() {
                 res.write('data: [DONE]\n\n');
                 return res.end();
               } else {
-                const result = await ai.models.generateContent({
-                  model: modelId,
-                  contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                  config: type === 'json' ? { responseMimeType: "application/json" } : {}
-                });
+                const result = await ai.models.generateContent(options);
                 
                 let text = "";
                 try {
