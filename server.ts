@@ -906,12 +906,12 @@ async function startServer() {
     }
 
     try {
-    const ai = getAIProvider();
+      const ai = getAIProvider();
       
-    if (ai && (typeof ai.models !== 'undefined' || typeof ai.getGenerativeModel === 'function')) {
+      if (ai && (typeof ai.models !== 'undefined' || typeof ai.getGenerativeModel === 'function')) {
         let modelName = "gemini-3-flash-preview";
         
-        const runAI = async (model: string) => {
+        const runAI = async (model: string, retryCount = 0): Promise<any> => {
           try {
             console.log(`[AI runAI] Trying model: ${model} (Provider: ${process.env.PREFERRED_AI_PROVIDER || 'gemini'})`);
             // Support both @google/genai (new) and @google/generative-ai (legacy)
@@ -922,7 +922,10 @@ async function startServer() {
               const options = {
                 model: modelId,
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                config: type === 'json' ? { responseMimeType: "application/json" } : {}
+                config: {
+                  ...(type === 'json' ? { responseMimeType: "application/json" } : {}),
+                  maxOutputTokens: 1024
+                }
               };
 
               if (stream) {
@@ -981,13 +984,23 @@ async function startServer() {
               } else {
                 const result = await genModel.generateContent({
                   contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                  generationConfig: type === 'json' ? { responseMimeType: "application/json" } : {}
+                  generationConfig: {
+                    ...(type === 'json' ? { responseMimeType: "application/json" } : {}),
+                    maxOutputTokens: 1024
+                  }
                 });
                 return res.json({ text: result.response.text() || "" });
               }
             }
           } catch (e: any) {
-             console.error(`[AI runAI] Error with model ${model}:`, e.message);
+             const errorMessage = e.message || "";
+             if (errorMessage.includes("429") && retryCount < 2 && !stream) {
+                const waitTime = retryCount === 0 ? 2000 : 5000;
+                console.warn(`[AI runAI] Quota hit (429), retrying in ${waitTime}ms...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+                return runAI(model, retryCount + 1);
+             }
+             console.error(`[AI runAI] Error with model ${model}:`, errorMessage);
              throw e;
           }
         };

@@ -9,7 +9,7 @@ export function NewsSection() {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('Todas');
-  const [timeLeft, setTimeLeft] = useState(300); // 5 minutes
+  const [timeLeft, setTimeLeft] = useState(900); // 15 minutes
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [selectedNews, setSelectedNews] = useState<NewsItem | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -92,16 +92,13 @@ export function NewsSection() {
       }
 
       // 3. Se cache falhar ou estiver incompleto, chamamos o Gemini
-      const prompt = `Analista Forex Sênior: Traduza e analise esta notícia para PT-BR.
-      Notícia: ${item.title} | ${item.description}
-      
-      Retorne APENAS um JSON estruturado com o seguinte formato:
+      const prompt = `Analise a notícia abaixo em português. Responda APENAS em JSON válido, sem texto extra:
       {
-        "fullContent": "Tradução detalhada e análise técnica (3-4 parágrafos)",
-        "summary": "Breve resumo executivo",
-        "keyPoints": ["Ponto chave 1", "Ponto chave 2", "Ponto chave 3"],
-        "recommendation": "Compra/Venda/Neutro"
-      }`;
+        "sumario": "máximo 2 frases curtas",
+        "pontos_chave": ["ponto 1", "ponto 2", "ponto 3"]
+      }
+
+      Notícia: ${item.title} | ${item.description}`;
 
       // Promise da IA
       const aiPromise = (async () => {
@@ -112,9 +109,32 @@ export function NewsSection() {
            throw new Error("API_ERROR");
         }
         const json = await response.json();
-        const data = JSON.parse(json.text || '{}');
-        if (!data.summary || !data.fullContent) throw new Error("INCOMPLETE_RESPONSE");
-        return data;
+        const rawText = json.text || '{}';
+        
+        let data: any = {};
+        try {
+          data = JSON.parse(rawText);
+        } catch (e) {
+          console.warn("JSON parse failed, trying to extract fields via regex");
+          // Try to extract sumario and pontos_chave if JSON is broken/cut
+          const sumarioMatch = rawText.match(/"sumario"\s*:\s*"([^"]+)"/);
+          const pontosMatch = rawText.match(/"pontos_chave"\s*:\s*\[([^\]]+)\]/);
+          
+          if (sumarioMatch) data.sumario = sumarioMatch[1];
+          if (pontosMatch) {
+            data.pontos_chave = pontosMatch[1].split(",").map((s: string) => s.trim().replace(/^"|"$/g, ''));
+          }
+        }
+
+        if (!data.sumario && !data.pontos_chave) {
+          throw new Error("UNAVAILABLE");
+        }
+
+        return {
+          summary: data.sumario || "Análise indisponível",
+          keyPoints: data.pontos_chave || [],
+          fullContent: data.sumario || item.description // Use summary as full content if tech analysis is gone
+        };
       })();
 
       // Promise de Timeout (15 segundos)
@@ -146,6 +166,9 @@ export function NewsSection() {
         details = "O sistema demorou mais de 15 segundos para processar. Tente novamente.";
       } else if (error.message === "QUOTA_EXCEEDED") {
         details = "Limite de cota de inteligência artificial excedido. A IA do plano gratuito permite poucas consultas simultâneas. Tente novamente em 1 minuto.";
+      } else if (error.message === "UNAVAILABLE") {
+        errorMsg = "Análise indisponível";
+        details = "A Inteligência Artificial não conseguiu processar esta notícia no momento.";
       }
 
       const errorItem = { 
@@ -182,7 +205,11 @@ export function NewsSection() {
 
     // Translate in batches using our backend AI proxy
     const BATCH_SIZE = 5;
+    let quotaExceeded = false;
+
     for (let i = 0; i < toTranslate.length; i += BATCH_SIZE) {
+      if (quotaExceeded) break;
+      
       const batch = toTranslate.slice(i, i + BATCH_SIZE);
       const prompt = `Translate to PT-BR (Forex Technical). Return JSON only.
       Format: { "translations": [{ "id": "...", "title": "...", "description": "..." }] }
@@ -191,6 +218,13 @@ export function NewsSection() {
 
       try {
         const response = await api.processAi(prompt, 'json');
+        
+        if (response.status === 429) {
+          console.warn("Translation loop hit quota limit (429). Pausing translation.");
+          quotaExceeded = true;
+          break;
+        }
+
         const json = await response.json();
         const data = JSON.parse(json.text || '{}');
         const translatedData = data.translations || [];
@@ -205,7 +239,15 @@ export function NewsSection() {
           const trans = cache[item.id];
           return trans ? { ...item, ...trans } : item;
         }));
-      } catch (err) {
+
+        // Small delay between batches to respect rate limits if many items
+        if (i + BATCH_SIZE < toTranslate.length) {
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      } catch (err: any) {
+        if (err.message?.includes('429')) {
+          quotaExceeded = true;
+        }
         console.error("Translation batch failed:", err);
       }
     }
@@ -266,7 +308,7 @@ export function NewsSection() {
       }
     } finally {
       setLoading(false);
-      setTimeLeft(300);
+      setTimeLeft(900);
     }
   };
 
@@ -276,7 +318,7 @@ export function NewsSection() {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           fetchNews();
-          return 300;
+          return 900;
         }
         return prev - 1;
       });
