@@ -68,27 +68,16 @@ async function initFirebase() {
       }
     }
     
-    // Standardization logic for common PaaS messes (newlines becoming spaces or \n literals)
+    // Standardization logic for common environment variable messy formatting
     if (serviceAccount && serviceAccount.private_key) {
       try {
-        let key = serviceAccount.private_key;
+        // Handle literal \n strings (two characters: \ and n)
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         
-        // Handle literal \n first
-        key = key.replace(/\\n/g, '\n');
-        
-        // Handle physical spaces replacing newlines in the base64 body (common mess)
-        if (!key.includes('\n') && key.includes('MII')) {
-          console.warn("[Firebase] Key looks like a single line, reformatting...");
-          const lines = key.split(' ');
-          const header = lines.slice(0, 4).join(' '); // "-----BEGIN PRIVATE KEY-----"
-          const footer = lines.slice(-4).join(' '); // "-----END PRIVATE KEY-----"
-          const body = lines.slice(4, -4).join(''); 
-          // Wrap body at 64 chars
-          const wrappedBody = (body.match(/.{1,64}/g) || []).join('\n');
-          key = `${header}\n${wrappedBody}\n${footer}\n`;
+        // Ensure it has the headers if they are missing (rare but happens)
+        if (!serviceAccount.private_key.includes('-----BEGIN PRIVATE KEY-----')) {
+          serviceAccount.private_key = `-----BEGIN PRIVATE KEY-----\n${serviceAccount.private_key}\n-----END PRIVATE KEY-----\n`;
         }
-        
-        serviceAccount.private_key = key;
       } catch (keyErr: any) {
         console.warn("[Firebase] Key processing warning:", keyErr.message);
       }
@@ -97,21 +86,31 @@ async function initFirebase() {
     let app;
     if (serviceAccount) {
       try {
-        app = initializeApp({
-          credential: cert(serviceAccount)
+        // Log basic info (no secrets)
+        console.log(`[Firebase] Initializing with service account for ${serviceAccount.project_id}`);
+        
+        // Prefer explicit credential object with only necessary fields to avoid signature issues
+        const credential = cert({
+          projectId: serviceAccount.project_id,
+          clientEmail: serviceAccount.client_email,
+          privateKey: serviceAccount.private_key
         });
-        console.log("[Firebase] Admin SDK initialized successfully with credentials.");
+
+        app = initializeApp({
+          credential
+        });
+        console.log("[Firebase] Admin SDK initialized.");
       } catch (e: any) {
         if (e.code === 'app/duplicate-app') {
           const { getApp } = await import("firebase-admin/app");
           app = getApp();
         } else {
-          console.error("[Firebase] Initialization crash:", e.message);
+          console.error("[Firebase] Initialization failed:", e.message);
           throw e;
         }
       }
     } else {
-      console.warn("[Firebase] Initializing without credentials (fallback).");
+      console.warn("[Firebase] No service account found, using projection ID fallback.");
       app = initializeApp({
         projectId: firebaseConfig.projectId
       });
@@ -853,21 +852,44 @@ async function startServer() {
                 
                 const result = await ai.models.generateContentStream({
                   model: modelId,
-                  contents: prompt
+                  contents: [{ role: 'user', parts: [{ text: prompt }] }]
                 });
                 for await (const chunk of result) {
-                  const text = chunk.text || "";
-                  res.write(`data: ${JSON.stringify({ text })}\n\n`);
+                  // The new SDK chunk might have different structure
+                  let text = "";
+                  try {
+                    if ((chunk as any).candidates?.[0]?.content?.parts?.[0]?.text) {
+                      text = (chunk as any).candidates[0].content.parts[0].text;
+                    } else if (typeof chunk.text === 'function') {
+                      text = chunk.text();
+                    } else if ((chunk as any).text) {
+                      text = (chunk as any).text;
+                    }
+                  } catch (err) {}
+                  
+                  if (text) res.write(`data: ${JSON.stringify({ text })}\n\n`);
                 }
                 res.write('data: [DONE]\n\n');
                 return res.end();
               } else {
                 const result = await ai.models.generateContent({
                   model: modelId,
-                  contents: prompt,
+                  contents: [{ role: 'user', parts: [{ text: prompt }] }],
                   config: type === 'json' ? { responseMimeType: "application/json" } : {}
                 });
-                return res.json({ text: result.text || "" });
+                
+                let text = "";
+                try {
+                  if (result.response?.candidates?.[0]?.content?.parts?.[0]?.text) {
+                    text = result.response.candidates[0].content.parts[0].text;
+                  } else if (typeof result.response.text === 'function') {
+                    text = result.response.text();
+                  } else if ((result.response as any).text) {
+                    text = (result.response as any).text;
+                  }
+                } catch (err) {}
+                
+                return res.json({ text });
               }
             } else {
               // Legacy SDK style
