@@ -12,8 +12,16 @@ import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import OpenAI from "openai";
 import { randomUUID } from "node:crypto";
 
-// Load Firebase Config
-const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+// Load Firebase Config safely
+let firebaseConfig: any = {};
+try {
+  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(configPath)) {
+    firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  }
+} catch (e) {
+  console.error("[Firebase] Error reading config file:", e);
+}
 
 // Initialize Firebase Admin
 let db: any = null;
@@ -121,6 +129,7 @@ async function migrateIfNeeded() {
 }
 
 async function startServer() {
+  try {
   const app = express();
   const PORT = 3000; // Force 3000 as per instructions
 
@@ -968,15 +977,25 @@ if (process.env.NODE_ENV !== "production") {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", async () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
     
-    // Initial sync on startup
-    await syncSpreadsheet();
+    // Initial sync on startup - non-blocking
+    syncSpreadsheet().catch(err => {
+      console.error("[Startup] Initial sync failed:", err.message);
+    });
     
     // Periodic sync every 2 minutes for testing (120,000 ms)
-    setInterval(syncSpreadsheet, 120000);
+    setInterval(() => {
+      syncSpreadsheet().catch(err => {
+        console.error("[Sync] Scheduled sync failed:", err.message);
+      });
+    }, 120000);
   });
+} catch (err: any) {
+  console.error("[Server] Critical startup error:", err);
+  process.exit(1);
+}
 }
 
 startServer();
