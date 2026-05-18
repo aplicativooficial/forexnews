@@ -57,15 +57,23 @@ async function initFirebase() {
         // Advanced Fix for private_key formatting issues common in some Node/OpenSSL versions
         if (serviceAccount && serviceAccount.private_key) {
           try {
-            const rawKey = serviceAccount.private_key.replace(/\\n/g, '\n');
-            const lines = rawKey.split('\n').filter(l => l.trim().length > 0);
+            // Remove backslash+n literals and normalize newlines
+            let key = serviceAccount.private_key.replace(/\\n/g, '\n');
+            
+            // If it's a single line with spaces instead of newlines (common in some env deployments), fix it
+            if (!key.includes('\n') && key.includes(' ')) {
+               key = key.replace(/ /g, '\n').replace(/BEGIN\nPRIVATE\nKEY/g, 'BEGIN PRIVATE KEY').replace(/END\nPRIVATE\nKEY/g, 'END PRIVATE KEY');
+            }
+
+            const lines = key.split('\n').filter(l => l.trim().length > 0);
             const bodyLines = lines.filter(l => !l.includes('-----'));
             const body = bodyLines.join('').replace(/[^A-Za-z0-9+/=]/g, '');
             
             // Re-wrap to PEM standard (64 chars per line)
+            // This ensures gRPC / OpenSSL 3.x can parse it without "UNSUPPORTED DECODER" error
             const wrapped = `-----BEGIN PRIVATE KEY-----\n${(body.match(/.{1,64}/g) || []).join('\n')}\n-----END PRIVATE KEY-----\n`;
             serviceAccount.private_key = wrapped;
-            console.log("[Firebase] Private key re-wrapped and validated.");
+            console.log("[Firebase] Private key standardized for OpenSSL 3 decoding.");
           } catch (keyErr: any) {
             console.warn("[Firebase] Key cleaning failed, using raw key:", keyErr.message);
           }
@@ -167,33 +175,48 @@ async function migrateIfNeeded() {
 }
 
 async function startServer() {
-  try {
   const app = express();
-  const PORT = 3000; // Force 3000 as per instructions
+  // Force 3000 as per AI Studio instructions, but honor PORT for external deployments like Railway
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-  // Initialize SQLite for persistence fallback
-  const sqlitePath = path.join(process.cwd(), 'database.sqlite');
+  // Global error handlers to prevent silent crashes
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[Process] Unhandled Rejection at:', promise, 'reason:', reason);
+  });
+
+  process.on('uncaughtException', (err) => {
+    console.error('[Process] Uncaught Exception:', err);
+  });
+
   try {
-    sqliteDb = new Database(sqlitePath);
-  } catch (err: any) {
-    console.error("[SQLite] Failed to open database:", err.message);
-    if (err.message.includes('malformed') || err.message.includes('corrupt')) {
-      console.warn("[SQLite] Database is corrupt. Deleting and starting fresh...");
+    // Initialize SQLite for persistence fallback
+    const sqlitePath = path.join(process.cwd(), 'database.sqlite');
+    function createDb() {
       try {
-        if (fs.existsSync(sqlitePath)) fs.unlinkSync(sqlitePath);
-        sqliteDb = new Database(sqlitePath);
-      } catch (e: any) {
-        console.error("[SQLite] Hard failure, using in-memory DB:", e.message);
-        sqliteDb = new Database(':memory:');
+        return new Database(sqlitePath);
+      } catch (err: any) {
+        console.error("[SQLite] Failed to open database:", err.message);
+        if (err.message.includes('malformed') || err.message.includes('corrupt')) {
+          console.warn("[SQLite] Database is corrupt. Deleting and starting fresh...");
+          try {
+            if (fs.existsSync(sqlitePath)) fs.unlinkSync(sqlitePath);
+            return new Database(sqlitePath);
+          } catch (e: any) {
+            console.error("[SQLite] Hard failure, using in-memory DB:", e.message);
+            return new Database(':memory:');
+          }
+        } else {
+          console.warn("[SQLite] Falling back to in-memory DB.");
+          return new Database(':memory:');
+        }
       }
-    } else {
-      throw err;
     }
-  }
+
+    sqliteDb = createDb();
 
   // Create tables if they don't exist
   try {
-    sqliteDb.exec(`
+    const initSql = `
       CREATE TABLE IF NOT EXISTS community_updates (
         id TEXT PRIMARY KEY,
         title TEXT,
@@ -250,7 +273,21 @@ async function startServer() {
         userId TEXT,
         updatedAt TEXT
       );
-    `);
+    `;
+    
+    try {
+      sqliteDb.exec(initSql);
+    } catch (e: any) {
+      if (e.message.includes('malformed')) {
+        console.warn("[SQLite] Exec failed due to malformation. Forcing reset.");
+        sqliteDb.close();
+        if (fs.existsSync(sqlitePath)) fs.unlinkSync(sqlitePath);
+        sqliteDb = new Database(sqlitePath);
+        sqliteDb.exec(initSql);
+      } else {
+        throw e;
+      }
+    }
 
     // Clean up duplicates if any
     try {
@@ -279,8 +316,16 @@ async function startServer() {
     next();
   });
 
-  // API Routes
-  
+  // Health Check
+  app.get("/api/health", (req, res) => {
+    res.json({ 
+      status: "ok", 
+      timestamp: new Date().toISOString(),
+      firebase: db ? "connected" : "unavailable",
+      sqlite: sqliteDb ? "connected" : "failed"
+    });
+  });
+
   // AI Results
   app.get("/api/ai-results", async (req, res) => {
     try {
@@ -1028,14 +1073,15 @@ app.post('/api/admin/push-results', async (req, res) => {
   }
 });
 
-if (process.env.NODE_ENV !== "production") {
+  let distPath = "";
+  if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.all('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -1043,9 +1089,11 @@ if (process.env.NODE_ENV !== "production") {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Server running on http://0.0.0.0:${PORT} (Node: ${process.version})`);
     
-    // Initial sync on startup - non-blocking
+    if (distPath) {
+      console.log(`Serving static files from ${distPath}`);
+    }
     syncSpreadsheet().catch(err => {
       console.error("[Startup] Initial sync failed:", err.message);
     });
