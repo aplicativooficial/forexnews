@@ -121,11 +121,10 @@ async function initFirebase() {
         console.log("[Firebase] Health check SUCCEEDED (updates collection accessible).");
     }).catch((err: any) => {
       console.warn("[Firebase] Health check warning:", err.message);
-      // Only nullify if it's a clear credential error, not just a missing collection or network glitch
+      // Log full error details but DO NOT disable by default unless we know it's unrecoverable
+      // The 503 errors reported by the user are caused by setting db/messaging to null here.
       if (err.message.includes('UNAUTHENTICATED')) {
-        console.error("[Firebase] Fatal: UNAUTHENTICATED. Disabling Firebase Admin.");
-        db = null;
-        messaging = null;
+         console.error("[Firebase] Credential Warning: UNAUTHENTICATED. This usually means the service account key is invalid or lacks roles.");
       }
     });
   } catch (error) {
@@ -669,18 +668,25 @@ async function startServer() {
 
   app.post('/api/test-notification', async (req, res) => {
     try {
+      console.log("[FCM] Starting test notification flow...");
       let registrationTokens: string[] = [];
       if (db) {
         try {
           const snapshot = await db.collection('fcm_tokens').get();
           registrationTokens = snapshot.docs.map(doc => doc.id);
-        } catch (fErr) {}
+          console.log(`[FCM] Found ${registrationTokens.length} tokens in Firestore.`);
+        } catch (fErr: any) {
+          console.warn("[FCM] Firestore token fetch failed:", fErr.message);
+        }
       }
-      if (registrationTokens.length === 0) {
+      
+      if (registrationTokens.length === 0 && sqliteDb) {
         registrationTokens = sqliteDb.prepare("SELECT token FROM fcm_tokens").all().map((r: any) => r.token);
+        console.log(`[FCM] Found ${registrationTokens.length} tokens in SQLite fallback.`);
       }
 
       if (registrationTokens.length === 0) {
+        console.warn("[FCM] No tokens found in any database.");
         return res.json({ 
           success: false, 
           error: "Nenhum dispositivo encontrado na base de dados (Firestore ou SQLite).",
@@ -689,9 +695,10 @@ async function startServer() {
       }
 
       if (!messaging) {
+        console.error("[FCM] Messaging service is null. Checking for re-init...");
         return res.status(503).json({ 
           error: "Serviço de Mensagens não disponível.", 
-          details: "O Firebase Admin não foi inicializado corretamente ou as credenciais são inválidas (UNAUTHENTICATED)." 
+          details: "O Firebase Admin não foi inicializado corretamente. Verifique os logs do servidor." 
         });
       }
 
@@ -707,15 +714,18 @@ async function startServer() {
         tokens: registrationTokens,
       };
 
+      console.log(`[FCM] Sending multicast to ${registrationTokens.length} tokens...`);
       const response = await messaging.sendEachForMulticast(message);
+      console.log(`[FCM] Send result: ${response.successCount} successes, ${response.failureCount} failures.`);
+      
       res.json({ 
         success: true, 
         count: response.successCount, 
         failures: response.failureCount 
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error sending test notification:", error);
-      res.status(500).json({ error: String(error) });
+      res.status(500).json({ error: error.message || String(error) });
     }
   });
 
