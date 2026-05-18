@@ -116,11 +116,14 @@ async function initFirebase() {
     db = getFirestore(app, configDbId || undefined);
     messaging = getMessaging(app);
     
-    // Verificação de conexão imediata
-    db.collection('health_check').limit(1).get().catch((err: any) => {
-      console.warn("[Firebase] Health check failed:", err.message);
-      if (err.message.includes('UNAUTHENTICATED') || err.message.includes('PERMISSION_DENIED')) {
-        console.warn("[Firebase] Disabling Firebase due to invalid credentials.");
+    // Verificação de conexão imediata usando uma coleção que sabemos existir e ter permissão
+    db.collection('updates').limit(1).get().then(() => {
+        console.log("[Firebase] Health check SUCCEEDED (updates collection accessible).");
+    }).catch((err: any) => {
+      console.warn("[Firebase] Health check warning:", err.message);
+      // Only nullify if it's a clear credential error, not just a missing collection or network glitch
+      if (err.message.includes('UNAUTHENTICATED')) {
+        console.error("[Firebase] Fatal: UNAUTHENTICATED. Disabling Firebase Admin.");
         db = null;
         messaging = null;
       }
@@ -602,7 +605,8 @@ async function startServer() {
         try {
           const snapshot = await db.collection('fcm_tokens').get();
           registrationTokens = snapshot.docs.map(doc => doc.id);
-        } catch (fErr) {
+          console.log(`[FCM] Found ${registrationTokens.length} tokens in Firestore.`);
+        } catch (fErr: any) {
           console.warn("[Firestore] FCM Token fetch failed, falling back to SQLite:", fErr.message);
         }
       }
@@ -677,7 +681,11 @@ async function startServer() {
       }
 
       if (registrationTokens.length === 0) {
-        return res.status(404).json({ error: "Nenhum usuário inscrito para notificações (FCM tokens)." });
+        return res.json({ 
+          success: false, 
+          error: "Nenhum dispositivo encontrado na base de dados (Firestore ou SQLite).",
+          tokensTried: 0 
+        });
       }
 
       if (!messaging) {
@@ -1083,7 +1091,11 @@ app.post('/api/admin/push-results', async (req, res) => {
   } else {
     distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.all('*', (req, res) => {
+    app.get('*', (req, res) => {
+      // Don't serve index.html for missed API calls
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: "API route not found" });
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

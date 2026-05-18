@@ -32,6 +32,11 @@ service cloud.firestore {
       return resource.data;
     }
 
+    // Health Check
+    match /health_check/{id} {
+      allow read: if true;
+    }
+
     // Community Updates
     match /updates/{updateId} {
       allow read: if true; // Publicly readable
