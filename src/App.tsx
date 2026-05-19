@@ -26,7 +26,6 @@ import {
   Award,
   Bell,
   Smartphone,
-  UserPlus,
   CheckCircle2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -38,7 +37,6 @@ import {
   DailyAnalysis 
 } from '@/src/types';
 import { useAuth } from './lib/AuthContext';
-import { signInWithGoogle } from './lib/firebase';
 import { CommunityUpdate } from '@/src/types';
 import { handleResponse } from './lib/api';
 
@@ -471,18 +469,8 @@ export default function App() {
 
         {/* Admin/Stats context footer */}
         <div className="p-4 border-t border-border-dim">
-          {!user ? (
+          {!isAdmin ? (
             <div className="space-y-2">
-              <button 
-                onClick={() => signInWithGoogle()}
-                className={cn(
-                  "flex w-full items-center gap-3 rounded-xl p-3 bg-brand-gold text-bg-dark font-black hover:bg-opacity-90 transition-all text-xs uppercase tracking-wider shadow-lg shadow-brand-gold/10",
-                  !isSidebarOpen && "justify-center p-3"
-                )}
-              >
-                <UserPlus className="h-5 w-5" />
-                {isSidebarOpen && <span>Entrar / Cadastrar</span>}
-              </button>
               <div className={cn(
                  "flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/5",
                  !isSidebarOpen && "justify-center"
@@ -496,7 +484,7 @@ export default function App() {
               <div className="flex items-center gap-2 px-3 py-1 bg-brand-gold/10 rounded-full border border-brand-gold/20">
                 <div className="h-1.5 w-1.5 rounded-full bg-brand-gold" />
                 <span className="text-[9px] text-brand-gold font-bold uppercase truncate max-w-[120px]">
-                  {isAdmin ? 'ADM: ' : ''}{user.email}
+                  ADM {user ? `: ${user.email}` : ''}
                 </span>
               </div>
               <button 
