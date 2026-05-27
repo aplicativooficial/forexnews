@@ -257,14 +257,11 @@ export function NewsSection() {
   const fetchNews = async () => {
     setLoading(true);
     try {
-      const response = await fetch('https://api.rss2json.com/v1/api.json?rss_url=https://www.fxstreet.com/rss/news');
-      const text = await response.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        throw new Error("RSS API returned invalid JSON: " + text.substring(0, 100));
+      const response = await fetch('/api/news');
+      if (!response.ok) {
+        throw new Error("Failed to fetch news proxy");
       }
+      const data = await response.json();
       
       if (!data || !data.items) {
         throw new Error("Invalid response format from RSS API");
@@ -274,9 +271,9 @@ export function NewsSection() {
         id: item.guid || index.toString(),
         title: item.title,
         source: 'FXStreet',
-        time: new Date(item.pubDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
-        description: item.description.replace(/<[^>]*>?/gm, '').trim(),
-        url: item.link,
+        time: item.pubDate ? new Date(item.pubDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+        description: (item.description || "").replace(/<[^>]*>?/gm, '').trim(),
+        url: item.link || '#',
         impact: index % 3 === 0 ? 'high' : index % 3 === 1 ? 'medium' : 'low',
         currency: item.title.includes('USD') || item.title.includes('FED') || item.title.includes('Inflation') ? 'USD' : 
                   item.title.includes('EUR') || item.title.includes('ECB') ? 'EUR' : 
